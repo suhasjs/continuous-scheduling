@@ -1,80 +1,75 @@
 import cvxpy as cp
 import numpy as np
 from rich import print as rprint
+from pjadmm import eval_augmented_lagrangian, iter_prox_jacobi_admm
+from jaxopt import LBFGSB
 import time
 
-# solves the Sia linear relaxation using cvxpy
+# solves the Sia linear relaxation using Proximal Jacobi ADMM
 # separable form: min sum_i c_i^T x_i,
 #            s.t. G sum_i x_i <= g
 #                 0 <= x_i <= 1
-# standard form: min c^T x, 
-#           s.t. Ax <= b
-class SiaCvxpyContinuousSolver:
+class PJADMMContinuousSolver:
   # initialize solver
   def __init__(self, params):
     self.G_mat = params['G_mat']
     self.g_vec = params['g_vec']
     self.solver_name = params['solver_name']
+    self.block_size = params['block_size']
     self.rtol = params.get('rtol', 1e-6)
-    self.solver_map = {'GLPK': cp.GLPK, 'CBC': cp.CBC, 'SCS': cp.SCS, 'PROXQP': cp.PROXQP, 'PIQP' : cp.PIQP}
-    self.solver_params = {'GLPK': {'verbose':True, 
-                                   'opts':{'msg_lev': 'GLP_MSG_OFF', 'tol_bnd': self.rtol}},
-                          'CBC': {'verbose':True, 'allowableGap': self.rtol*100},
-                          'SCS': {'verbose':True, 'eps': self.rtol},
-                          'PROXQP': {'verbose':True, 'eps_rel': self.rtol},
-                          'PIQP': {'verbose':True, 'eps_rel': self.rtol}}
+    self.solver_params = None
 
     # problem parameters
     self.num_configs = self.G_mat.shape[1]
     self.num_jobs = 0
     self.num_gpu_types = self.G_mat.shape[0]
     self.num_variables = self.num_jobs * self.num_configs
+    self.is_solved = False
     
     # jobname -> idx mapping
     self.job_to_idx = dict()
-    
-    # state for the problem
-    self.cost_vector = None
-    self.A_mat = None
-    self.b_vec = None
-    self.variables = None
-    self.problem = None
-    self.constraints = None
-    self.solution = None
-    self.results = None
-    self.is_solved = False
+    # job ID -> block ID mapping
+    self.idx_to_block_map = dict()
+    # block ID -> [job ID] mapping
+    self.block_to_idxs_map = dict()
+    # valid IDxs in each block
+    self.block_valid_idxs = dict()
 
-  def __reconstruct_standard_form(self):
-    rprint(f"Reconstructing standard form for {self.num_jobs} jobs")
-    self.num_variables = self.num_jobs * self.num_configs
-    num_rows = self.num_gpu_types + self.num_jobs + (2 * self.num_variables)
-    num_cols = self.num_jobs * self.num_configs
-    new_A_mat = np.zeros(shape=(num_rows, num_cols))
-    new_b_vec = np.zeros(shape=(num_rows, ))
-    # Gx <= g constraints
-    new_A_mat[:self.num_gpu_types, :] = np.tile(self.G_mat, (1, self.num_jobs))
-    new_b_vec[:self.num_gpu_types] = self.g_vec
-    # sum-to-1 constraints
-    start_idx = self.num_gpu_types
-    for job_idx in range(self.num_jobs):
-      new_A_mat[start_idx, (job_idx*self.num_configs) : (job_idx + 1)*self.num_configs] = 1
-      new_b_vec[start_idx] = 1
-      start_idx += 1
-    # 0 <= x_i constraints ==> represented as (-x_i <= 0)
-    new_A_mat[start_idx: start_idx + self.num_variables, :] = -np.eye(self.num_variables)
-    new_b_vec[start_idx: start_idx + self.num_variables] = 0
-    start_idx += self.num_variables
-    # x_i <= 1 constraints
-    new_A_mat[start_idx: start_idx + self.num_variables, :] = np.eye(self.num_variables)
-    new_b_vec[start_idx: start_idx + self.num_variables] = 1
-    # update the standard form matrices
-    self.A_mat = new_A_mat
-    self.b_vec = new_b_vec
-    # reconstruct the CVXPY problem
-    self.variables = cp.Variable(self.num_variables)
-    self.variables.value = self.solution
-    self.constraints = [self.A_mat @ self.variables <= self.b_vec]
-    self.problem = cp.Problem(cp.Minimize(self.cost_vector @ self.variables), self.constraints)
+    # other params
+    lbfgs_max_iters = 15
+    jax_xproblem = LBFGSB(fun=eval_augmented_lagrangian, jit=True, unroll=True, implicit_diff=False,
+                          maxiter=lbfgs_max_iters, tol=1e-4, stepsize=0.8, history_size=10, use_gamma=True)
+    
+    ############# PROBLEM STATE #############
+    # cost vector for each job in each block
+    # shape: num_blocks x block_size x num_configs
+    self.vmapped_cost_matrices = None
+    ## Variables for k, (k+1) iterations
+    # solution for each job in each block
+    # shape: num_blocks x block_size x num_configs
+    self.vmapped_x_ks = None
+    self.vmapped_x_kp1s = None
+    # slack variables for each GPU type
+    self.s_k = None
+    self.s_kp1 = None
+    # dual variables for each GPU constraint
+    self.u_k = None
+    self.u_kp1 = None
+    # slack variables for sum-to-1 constraints: one per job
+    # shape: num_blocks x block_size
+    self.f_k = None
+    self.f_kp1 = None
+    # dual variables for sum-to-1 constraints: one per job
+    # shape: num_blocks x block_size
+    self.v_k = None
+    self.v_kp1 = None
+    # additional variables for kth iteration
+    # r_ks = residual for GPU constraints per block
+    # shape: num_blocks x num_gpu_types
+    self.r_ks = None
+    # y_ks = residual for sum-to-1 constraints per block
+    # shape: num_blocks x block_size
+    self.y_ks = None
 
   def update_costs(self, cost_updates):
     self.is_solved = False
@@ -83,8 +78,8 @@ class SiaCvxpyContinuousSolver:
       if job_idx is None:
         rprint(f"Job {jobname} not found in job_to_idx mapping")
         continue
-      cost_vec_start_idx = job_idx * self.num_configs
-      self.cost_vector[cost_vec_start_idx: cost_vec_start_idx+self.num_configs] = cost_updates[jobname]
+      block_id = self.idx_to_block_map[job_idx]
+    # TODO :: finish impl
 
   # added_jobs = {new_jobname: cost_vector}
   # removed_jobs = [jobname]
