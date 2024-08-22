@@ -5,7 +5,8 @@ class JobStatus(Enum):
   INVALID = -1
   QUEUED = 0
   RUNNING = 1
-  COMPLETED = 2
+  REALLOCATING = 2
+  COMPLETED = 3
 
 class AbstractJob:
   def __init__(self, name):
@@ -13,13 +14,15 @@ class AbstractJob:
     self.status = JobStatus.INVALID
     self.allocation = None
     self.time = 0
+    self.reallocation_penalty = 0
     self.progress = None
     self.max_progress = None
     self.progress_fns = None
     self.events = []
 
   # Evaluate the utility of the job on proposed candidate_allocations
-  # returns a dict of {candidate_allocation -> utility}
+  # candidate_allocations: List[(num_nodes, num_gpus, gpu_type)]
+  # returns List[utility of candidate_allocation #i]
   def evaluate_allocations(self, candidate_allocations):
     pass
 

@@ -13,3 +13,6 @@ class AbstractPolicy:
 
   def step(self, seconds):
     pass
+
+  def optimize_allocations(self):
+    pass
