@@ -61,9 +61,8 @@ class SinglePhaseJob(AbstractJob):
 
     # check if job is completed
     if self.progress >= self.max_progress:
+      # mark job as completed
       self.status = JobStatus.COMPLETED
       self.progress = self.max_progress
-    
-    # update allocation
-    self.allocation = None
-    self.events.append((self.time, self.progress, self.status, None))
+      self.allocation = None
+      self.events.append((self.time, self.progress, self.status, None))
