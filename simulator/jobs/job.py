@@ -9,16 +9,21 @@ class JobStatus(Enum):
   COMPLETED = 3
 
 class AbstractJob:
-  def __init__(self, name):
+  def __init__(self, name, submission_time):
     self.name = name
     self.status = JobStatus.INVALID
     self.allocation = None
     self.time = 0
+    self.submission_time = submission_time
+    self.completion_time = None
     self.reallocation_penalty = 0
     self.progress = None
     self.max_progress = None
     self.progress_fns = None
     self.events = []
+  
+  def __repr__(self):
+    return f"Job(name={self.name}, status={self.status}, progress={self.progress}/{self.max_progress}, alloc={self.allocation}, runtime={self.time}"
 
   # Evaluate the utility of the job on proposed candidate_allocations
   # candidate_allocations: List[(num_nodes, num_gpus, gpu_type)]

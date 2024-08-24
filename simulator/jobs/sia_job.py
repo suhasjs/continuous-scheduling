@@ -1,6 +1,7 @@
-from job import AbstractJob, JobStatus
+from .job import AbstractJob, JobStatus
 from rich import print as rprint
 import numpy as np
+import pickle
 
 # Represents a class of adaptive jobs (one per model) run with Sia scheduler
 # Progress functions *do* change over time
@@ -10,11 +11,13 @@ class SiaJobClass:
   # progress_profile = {configs: list of configs per GPU type,
   #                     logs: List[ progress: progress at log time,
   #                                 goodputs: {GPU type: goodputs for all configs of GPU type}]}
-  def __init__(self, model_name, progress_profiles, total_cluster_gpus):
+  def __init__(self, model_name, progress_profiles_path, total_cluster_gpus):
+    with open(progress_profiles_path, 'rb') as f:
+      progress_profiles = pickle.load(f)
     self.configs = progress_profiles['configs']
     self.progress_profiles = progress_profiles['logs']
     self.model_name = model_name
-    self.calibration_factor = SiaJobClass.CALIBRATION_FACTORS[model_name]
+    self.calibration_factor = 1 / SiaJobClass.CALIBRATION_FACTORS[model_name]
     self.max_progress = self.progress_profiles[-1]['progress']
 
     # pre-process progress profiles
@@ -30,7 +33,7 @@ class SiaJobClass:
         self.configs_to_idx[config] = idx
         self.idx_to_configs[idx] = config
         idx += 1
-    self.progresses = np.asarrray([log['progress'] for log in self.progress_profiles])
+    self.progresses = np.asarray([log['progress'] for log in self.progress_profiles])
     self.num_configs = len(self.configs_to_idx)
     self.progress_vals = np.zeros(shape=(len(self.progress_profiles), self.num_configs), dtype=np.float32)
     for i, log in enumerate(self.progress_profiles):
@@ -42,7 +45,7 @@ class SiaJobClass:
     # FILTER OUT CONFIGS NOT NEEDED
     chosen_config_idxs = []
     for i in range(self.num_configs):
-      nnodes, ngpus, gpu_type = self.configs[i]
+      nnodes, ngpus, gpu_type = self.idx_to_configs[i]
       if gpu_type not in total_cluster_gpus:
         continue
       if ngpus > total_cluster_gpus[gpu_type]:
@@ -56,7 +59,7 @@ class SiaJobClass:
       new_idx_to_configs[i] = config
     self.configs_to_idx = new_configs_to_idx
     self.idx_to_configs = new_idx_to_configs
-    rprint(f"Filtered configs: {self.configs_to_idx.keys()}")
+    rprint(f"Class: {self.model_name}, filtered configs: {self.configs_to_idx.keys()}")
 
   # candidate_allocations: List of candidate allocations to evaluate
   # returns: List of normalized utilities for each candidate allocation
@@ -78,6 +81,7 @@ class SiaJobClass:
   # returns: Tuple of (rate, valid_for) where rate is the progress rate for the given config
   #          and valid_for is the time until the next progress log
   def get_progress_rate(self, cur_progress, config):
+    assert config is not None, "Config cannot be None"
     row_idx = np.searchsorted(self.progresses, cur_progress, side='left')
     if row_idx == len(self.progresses):
       return 0
@@ -86,22 +90,24 @@ class SiaJobClass:
     valid_for = (self.progresses[row_idx + 1] - cur_progress) / rate
     return rate, valid_for
 
-
 # Represents a class of jobs with only one phase
 # Progress functions do not change over time
 class SiaJob(AbstractJob):
-  def __init__(self, name, job_class_obj):
-    super().__init__(name)
+  def __init__(self, name, submission_time, job_class_obj):
+    super().__init__(name, submission_time)
     self.progress = 0
     self.job_class = job_class_obj
     self.max_progress = job_class_obj.max_progress
-    self.status = JobStatus.QUEUED
     self.events.append((self.time, self.progress, self.status, None))
   
   def evaluate_allocations(self, candidate_allocations):
     return self.job_class.evaluate_allocations(self.progress, candidate_allocations)
   
   def reallocate(self, new_allocation):
+    if self.allocation == new_allocation:
+      return
+    # new_allocation = (1, 8, "dgx-ext")
+    rprint(f"Reallocating job {self.name}:{self.allocation} --> {new_allocation}")
     if self.allocation is not None and new_allocation is not None:
       self.events.append((self.time, self.progress, JobStatus.REALLOCATING, (self.allocation, new_allocation)))
       self.allocation = new_allocation
@@ -111,8 +117,12 @@ class SiaJob(AbstractJob):
       self.status = JobStatus.RUNNING
       self.events.append((self.time, self.progress, self.status, self.allocation))
     else:
+      self.allocation = None
       self.status = JobStatus.QUEUED
       self.events.append((self.time, self.progress, self.status, None))
+  
+  def __repr__(self):
+    return f"SiaJob(name={self.name}, status={self.status}, progress={self.progress}/{self.max_progress}, alloc={self.allocation}, runtime={self.time}"
 
   def step(self, seconds):
     if self.allocation is None:
@@ -125,17 +135,22 @@ class SiaJob(AbstractJob):
     while seconds_left > 0:
       # get rate of progress
       progress_rate, valid_for = self.job_class.get_progress_rate(self.progress, self.allocation)
+      rprint(f"\t{self.name}, rate: {progress_rate:.2f}, valid_for: {valid_for:.2f}, progress={self.progress:.2f}/{self.max_progress:.2f}")
       run_for = min(seconds_left, valid_for)
 
       # update progress
       added_progress = progress_rate * run_for
       self.progress += added_progress
       self.time += run_for
+      seconds_left -= run_for
 
       # check if job is completed
       if np.abs(self.progress - self.max_progress) < 1e-2:
+        rprint(f"Job {self.name} completed: runtime={self.time}")
         self.status = JobStatus.COMPLETED
         self.progress = self.max_progress
+        self.completion_time = self.time + self.submission_time
         # update allocation
         self.allocation = None
         self.events.append((self.time, self.progress, self.status, None))
+        break

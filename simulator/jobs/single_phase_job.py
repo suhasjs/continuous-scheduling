@@ -1,14 +1,13 @@
-from job import AbstractJob, JobStatus
+from .job import AbstractJob, JobStatus
 
 # Represents a class of jobs with only one phase
 # Progress functions do not change over time
 class SinglePhaseJob(AbstractJob):
-  def __init__(self, name, max_progress, progress_fns):
-    super().__init__(name)
+  def __init__(self, name, submission_time, max_progress, progress_fns):
+    super().__init__(name, submission_time)
     self.progress = 0
     self.progress_fns = progress_fns
     self.max_progress = max_progress
-    self.status = JobStatus.QUEUED
     self.events.append((self.time, self.progress, self.status, None))
   
   def evaluate_allocations(self, candidate_allocations):
@@ -65,4 +64,5 @@ class SinglePhaseJob(AbstractJob):
       self.status = JobStatus.COMPLETED
       self.progress = self.max_progress
       self.allocation = None
+      self.completion_time = self.time + self.submission_time
       self.events.append((self.time, self.progress, self.status, None))

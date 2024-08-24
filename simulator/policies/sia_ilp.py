@@ -1,4 +1,4 @@
-from policy import AbstractPolicy
+from .policy import AbstractPolicy
 import cvxpy as cp
 import numpy as np
 from rich import print as rprint
@@ -11,7 +11,7 @@ class SiaILP(AbstractPolicy):
     self.ngpus_per_node = ngpus_per_node
     self.cluster_ordering = sorted(list(num_nodes.keys()))
     self.num_gputypes = len(self.cluster_ordering)
-    self.cluster_gpus = {cluster: num_nodes[cluster] * ngpus_per_node for cluster in self.cluster_ordering}
+    self.cluster_gpus = {cluster: num_nodes[cluster] * ngpus_per_node[cluster] for cluster in self.cluster_ordering}
     self.total_num_gpus = sum(self.cluster_gpus.values())
 
     # populate configurations
@@ -73,6 +73,9 @@ class SiaILP(AbstractPolicy):
       config_cnstr_matrix[i, start_idx : start_idx + cluster_nconfigs] = np.asarray(config_ngpus[cluster])
     return configs, (config_cnstr_matrix, max_ngpus)
   
+  def get_configurations(self):
+    return self.configs
+  
   def update_failed_nodes(self, failed_nodes):
     pass
 
@@ -100,13 +103,15 @@ class SiaILP(AbstractPolicy):
 
 
   def step(self, seconds):
-    self.time += seconds
+    self.current_time += seconds
 
   def optimize_allocations(self):
     # start setup time 
     setup_start = time.time()
     # create inputs to the ILP
     num_jobs = len(self.active_jobs)
+    if num_jobs == 0:
+      return
     num_configs = len(self.configs)
     allocX = cp.Variable((num_jobs, num_configs), boolean=True)
     cost_matrix = np.zeros((num_jobs, num_configs))
@@ -118,7 +123,7 @@ class SiaILP(AbstractPolicy):
     # add a small value to cost_matrix to avoid division by zero
     if self.p_value < 0:
       cost_matrix[cost_matrix == 0] = 1e-3
-    cost_matrix = np.pow(cost_matrix, self.p_value)
+    cost_matrix = np.power(cost_matrix, self.p_value)
 
     #### Construct optimization problem ####
     objective = cp.sum(cp.multiply(allocX, cost_matrix))
@@ -133,7 +138,7 @@ class SiaILP(AbstractPolicy):
     for i in range(num_jobs):
       constraints.append(cp.sum(allocX[i, :]) == 1)
     # 2. Sum of GPUs allocated to all jobs is less than total number of GPUs
-    alloced_gpus = cp.matmul(cp.sum(allocX, axis=0), self.config_cnstr_matrix)
+    alloced_gpus = cp.matmul(self.config_cnstr_matrix, cp.sum(allocX, axis=0).T)
     constraints.append(cp.sum(alloced_gpus) <= self.total_num_gpus)
     # 3. X >= 0
     constraints.append(allocX >= 0)
