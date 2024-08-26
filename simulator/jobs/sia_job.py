@@ -7,7 +7,9 @@ import pickle
 # Progress functions *do* change over time
 class SiaJobClass:
   CALIBRATION_FACTORS = {"cifar10": 1.8, "imagenet": 1.2, "yolov3": 1.2, 
-                         "bert": 1.2, "deepspeech2": 1.2, "ncf": 1.5, "gpt_pmp": 1.0}
+                         "bert": 1.2, "deepspeech2": 1.2, "ncf": 1.5, "default" : 1.0}
+  RESTART_TIMES = {"cifar10": 50, "imagenet": 250, "yolov3": 80, 
+                   "bert": 120, "deepspeech2": 25, "ncf": 15, "gpt_pmp": 30, "default": 30}
   # progress_profile = {configs: list of configs per GPU type,
   #                     logs: List[ progress: progress at log time,
   #                                 goodputs: {GPU type: goodputs for all configs of GPU type}]}
@@ -19,6 +21,7 @@ class SiaJobClass:
     self.model_name = model_name
     self.calibration_factor = 1 / SiaJobClass.CALIBRATION_FACTORS[model_name]
     self.max_progress = self.progress_profiles[-1]['progress']
+    self.restart_penalty = SiaJobClass.RESTART_TIMES[model_name]
 
     # pre-process progress profiles
     # config -> idx map
@@ -99,27 +102,63 @@ class SiaJob(AbstractJob):
     self.job_class = job_class_obj
     self.max_progress = job_class_obj.max_progress
     self.events.append((self.time, self.progress, self.status, None))
+    # time left for reallocation (singular event)
+    self.realloc_countdown = 0
+    # total time spent reallocating across all reallocations
+    self.realloc_time = 0
+    self.num_restarts = 0
+    self.run_time = 0
+    self.max_scale = 0.6
   
   def evaluate_allocations(self, candidate_allocations):
-    return self.job_class.evaluate_allocations(self.progress, candidate_allocations)
-  
+    utilities = self.job_class.evaluate_allocations(self.progress, candidate_allocations)
+    # set utility = 0 for all allocs > max_scale * 2 GPUs
+    for i, alloc in enumerate(candidate_allocations):
+      _, ngpus, _ = alloc
+      if ngpus > (self.max_scale * 2):
+        utilities[i] = 0
+    # return utilities as-is if job is not allocated
+    if self.allocation is None:
+      # rprint(f"Job {self.name}, (alloc, utilities): {[(x, y) for x,y in zip(candidate_allocations, utilities) if y > 0]}")
+      return utilities
+    # ELSE: if job is allocated, penalize utilities for reallocating
+    realloc_factor = self.run_time / (self.time + self.job_class.restart_penalty)
+    # if job is currently reallocating, penalize re-allocations
+    if self.status == JobStatus.REALLOCATING:
+      realloc_factor = 0
+    # penalize all utilities by realloc_factor to encourage job to stay on current allocation
+    # rprint(f"Job {self.name}, time: {self.time}, realloc_time: {self.realloc_time}, realloc_factor: {realloc_factor}")
+    for i in range(len(utilities)):
+      candidate_alloc = candidate_allocations[i]
+      if candidate_alloc == self.allocation:
+        continue
+      else:
+        utilities[i] *= realloc_factor
+    
+    # rprint(f"Job {self.name}, (alloc, utilities): {[(x, y) for x,y in zip(candidate_allocations, utilities) if y > 0]}")
+    return utilities
+    
   def reallocate(self, new_allocation):
     if self.allocation == new_allocation:
       return
     # new_allocation = (1, 8, "dgx-ext")
-    rprint(f"Reallocating job {self.name}:{self.allocation} --> {new_allocation}")
+    # rprint(f"Reallocating job {self.name}:{self.allocation} --> {new_allocation}")
     if self.allocation is not None and new_allocation is not None:
       self.events.append((self.time, self.progress, JobStatus.REALLOCATING, (self.allocation, new_allocation)))
+      self.realloc_countdown = self.job_class.restart_penalty
       self.allocation = new_allocation
-      self.status = JobStatus.RUNNING
+      self.status = JobStatus.REALLOCATING
     elif new_allocation is not None:
       self.allocation = new_allocation
-      self.status = JobStatus.RUNNING
+      self.realloc_countdown = self.job_class.restart_penalty
+      self.status = JobStatus.REALLOCATING
       self.events.append((self.time, self.progress, self.status, self.allocation))
     else:
       self.allocation = None
       self.status = JobStatus.QUEUED
       self.events.append((self.time, self.progress, self.status, None))
+    if new_allocation is not None:
+      self.max_scale = max(self.max_scale, new_allocation[1])
   
   def __repr__(self):
     return f"SiaJob(name={self.name}, status={self.status}, progress={self.progress}/{self.max_progress}, alloc={self.allocation}, runtime={self.time}"
@@ -130,23 +169,38 @@ class SiaJob(AbstractJob):
       self.progress += 0
       return
     
-    ### self.allocation is not None ###
+    # seconds to simulate
     seconds_left = seconds
+    if self.status == JobStatus.REALLOCATING:
+      # job is reallocating
+      subtract_time = min(self.realloc_countdown, seconds)
+      self.realloc_countdown -= subtract_time
+      self.time += subtract_time
+      seconds_left -= subtract_time
+      if self.realloc_countdown == 0:
+        # reallocation complete ==> transition to running
+        self.status = JobStatus.RUNNING
+        self.realloc_time += self.job_class.restart_penalty
+        self.num_restarts += 1
+        self.events.append((self.time, self.progress, self.status, self.allocation))
+    
+    ### self.allocation is not None ###
     while seconds_left > 0:
       # get rate of progress
       progress_rate, valid_for = self.job_class.get_progress_rate(self.progress, self.allocation)
-      rprint(f"\t{self.name}, rate: {progress_rate:.2f}, valid_for: {valid_for:.2f}, progress={self.progress:.2f}/{self.max_progress:.2f}")
+      # rprint(f"\t{self.name}, rate: {progress_rate:.2f}, valid_for: {valid_for:.2f}, progress={self.progress:.2f}/{self.max_progress:.2f}")
       run_for = min(seconds_left, valid_for)
 
       # update progress
       added_progress = progress_rate * run_for
       self.progress += added_progress
       self.time += run_for
+      self.run_time += run_for
       seconds_left -= run_for
 
       # check if job is completed
       if np.abs(self.progress - self.max_progress) < 1e-2:
-        rprint(f"Job {self.name} completed: runtime={self.time}")
+        # rprint(f"Job {self.name} completed: runtime={self.time}")
         self.status = JobStatus.COMPLETED
         self.progress = self.max_progress
         self.completion_time = self.time + self.submission_time

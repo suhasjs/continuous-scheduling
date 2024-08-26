@@ -57,7 +57,8 @@ sia_solver_options = {'solver': 'GLPK_MI'}
 policy = SiaILP(cluster_nnodes, cluster_ngpus_per_node, sia_policy_options, sia_solver_options)
 
 # simulate till all jobs complete
-while event_recorder.current_time < 30000:
+all_jobs_complete = False
+while event_recorder.current_time < 10000 or not all_jobs_complete:
   all_jobs_complete = all([job.status == JobStatus.COMPLETED for job in jobs])
   if all_jobs_complete:
     break
@@ -97,7 +98,24 @@ while event_recorder.current_time < 30000:
   table.add_column("Allocation", justify="left", style="white", no_wrap=True)
 
   for jobname, job in active_jobs.items():
-    table.add_row(jobname, "SiaJob", job.status.name, str(round(job.time, 1)), "-", str(job.allocation))
+    table.add_row(jobname, "SiaJob", job.status.name, str(round(job.time, 1)), str(job.num_restarts), \
+                  str(job.allocation))
 
   console = Console()
   console.print(table)
+  # print resource consumption
+  gpu_counts = {cluster: 0 for cluster in cluster_nnodes.keys()}
+  for jobname, job in active_jobs.items():
+    if job.allocation is not None:
+      _, ngpus, cluster = job.allocation
+      gpu_counts[cluster] += ngpus
+  rprint(f"GPU usage:")
+  for cluster, ngpus in gpu_counts.items():
+    rprint(f"\t{cluster} = {ngpus} / {total_cluster_gpus[cluster]} GPUs ({round(ngpus / total_cluster_gpus[cluster] * 100, 2)}%)")
+  # print JCTs for all completed jobs
+  completed_jobs = event_recorder.get_completed_jobs()
+  jcts_dict = {job.name: job.time for job in completed_jobs}
+  avg_jct = np.mean(list(jcts_dict.values())) if len(jcts_dict) > 0 else 0
+  rprint(f"Avg JCT: {avg_jct:.2f}")
+  # rprint(f"JCTs: {jcts_dict}")
+  rprint(f"--------------------------------------------")

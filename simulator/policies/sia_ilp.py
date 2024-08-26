@@ -119,6 +119,8 @@ class SiaILP(AbstractPolicy):
     for i, jobname in enumerate(job_ordering):
       utilities = np.asarray(self.job_utilities[jobname])
       cost_matrix[i, :] = utilities
+    # rprint(f"Cost matrix: {cost_matrix}")
+    # rprint(f"Utilities: {self.job_utilities}")
     # raise cost_matrix to the power of p_value
     # add a small value to cost_matrix to avoid division by zero
     if self.p_value < 0:
@@ -148,6 +150,7 @@ class SiaILP(AbstractPolicy):
     setup_end = time.time()
     solve_start = time.time()
     cp_solver = self.solver_maps[self.solver_name]
+    # print(f"Problem: {prob}")
     prob.solve(solver=cp_solver, verbose=False, **self.solver_options)
     solve_end = time.time()
     if prob.status != cp.OPTIMAL:
