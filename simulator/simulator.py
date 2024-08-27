@@ -1,7 +1,9 @@
 from policies.sia_ilp import SiaILP
 from jobs.job import JobStatus
 from jobs.sia_job import SiaJobClass
+from jobs.batch_inference_job import BatchInferenceJobClass
 from jobs.sia_job import SiaJob
+from jobs.batch_inference_job import BatchInferenceJob
 from event_recorder import EventRecorder
 
 from argparse import ArgumentParser
@@ -23,7 +25,9 @@ simulate_scheduler_delay = args.simulate_scheduler_delay
 job_trace_file = args.job_trace
 
 # cluster configuration
-cluster_nnodes = {"azure": 5, "aws": 16, "dgx-ext": 2, "quad": 1, "rtx": 3}
+# cluster_nnodes = {"azure": 5, "aws": 16, "dgx-ext": 2, "quad": 1, "rtx": 3}
+# cluster_ngpus_per_node = {"aws": 4, "azure" : 8, "dgx-ext": 8, "quad" : 4, "rtx": 8}
+cluster_nnodes = {"azure": 5, "aws": 16, "dgx-ext": 4, "quad": 1, "rtx": 3}
 cluster_ngpus_per_node = {"aws": 4, "azure" : 8, "dgx-ext": 8, "quad" : 4, "rtx": 8}
 total_cluster_gpus = {cluster: cluster_nnodes[cluster] * cluster_ngpus_per_node[cluster] for cluster in cluster_nnodes.keys()}
 
@@ -35,17 +39,27 @@ sia_job_classes['imagenet'] = SiaJobClass("imagenet", "./jobs/profiles/imagenet.
 sia_job_classes['deepspeech2'] = SiaJobClass("deepspeech2", "./jobs/profiles/deepspeech2.pkl", total_cluster_gpus)
 sia_job_classes['yolov3'] = SiaJobClass("yolov3", "./jobs/profiles/yolov3.pkl", total_cluster_gpus)
 sia_job_classes['ncf'] = SiaJobClass("ncf", "./jobs/profiles/ncf.pkl", total_cluster_gpus)
+batch_inference_job_classes = {"imagenet_resnet50": BatchInferenceJobClass("imagenet_resnet50"), 
+                               "llama_8b_wikipedia": BatchInferenceJobClass("llama_8b_wikipedia"),
+                               "llama_8b_commoncrawl": BatchInferenceJobClass("llama_8b_commoncrawl")}
 
 # load job trace
 jobs = []
 with open(job_trace_file, 'r') as f:
   jobs_pd = pd.read_csv(f)
 for i, row in jobs_pd.iterrows():
-  is_sia_job = True
+  is_sia_job = (row['category'] == 'SiaJob')
+  is_batch_inference_job = (row['category'] == 'BatchInferenceJob')
   if is_sia_job:
     model_class = row['application']
     model_obj = sia_job_classes[model_class]
     job = SiaJob(row['name'], row['time'], model_obj)
+  elif is_batch_inference_job:
+    model_class = row['application']
+    model_obj = batch_inference_job_classes[model_class]
+    job = BatchInferenceJob(row['name'], row['time'], model_obj)
+  else:
+    raise ValueError(f"Job category {row['category']} not supported")
   jobs.append(job)
 
 # initialize event recorder
@@ -58,7 +72,7 @@ policy = SiaILP(cluster_nnodes, cluster_ngpus_per_node, sia_policy_options, sia_
 
 # simulate till all jobs complete
 all_jobs_complete = False
-while event_recorder.current_time < 10000 or not all_jobs_complete:
+while event_recorder.current_time < 1000000 and not all_jobs_complete:
   all_jobs_complete = all([job.status == JobStatus.COMPLETED for job in jobs])
   if all_jobs_complete:
     break
@@ -100,8 +114,14 @@ while event_recorder.current_time < 10000 or not all_jobs_complete:
 
   for jobname, job in active_jobs.items():
     progress_perc = round(job.progress / job.max_progress * 100, 2)
-    table.add_row(jobname, "SiaJob", job.status.name, str(round(job.time, 1)), str(progress_perc), \
-                  str(job.num_restarts), str(job.allocation))
+    is_sia_job = isinstance(job, SiaJob)
+    is_batch_inference_job = isinstance(job, BatchInferenceJob)
+    if is_sia_job:
+      table.add_row(jobname, "SiaJob", job.status.name, str(round(job.time, 1)), str(progress_perc), \
+                    str(job.num_restarts), str(job.allocation))
+    elif is_batch_inference_job:
+      table.add_row(jobname, "BatchInferenceJob", job.status.name, str(round(job.time, 1)), str(progress_perc), \
+                    "-", str(job.allocation))
 
   console = Console()
   console.print(table)
@@ -120,5 +140,5 @@ while event_recorder.current_time < 10000 or not all_jobs_complete:
   jcts_dict = {job.name: job.time for job in completed_jobs}
   avg_jct = np.mean(list(jcts_dict.values())) if len(jcts_dict) > 0 else 0
   rprint(f"Avg JCT: {avg_jct:.2f}")
-  # rprint(f"JCTs: {jcts_dict}")
+  rprint(f"JCTs: {jcts_dict}")
   rprint(f"--------------------------------------------")

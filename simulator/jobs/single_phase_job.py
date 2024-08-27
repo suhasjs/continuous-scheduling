@@ -21,7 +21,7 @@ class SinglePhaseJob(AbstractJob):
         util = util_fn(num_nodes, num_gpus)
         candidate_utilities.append(util)
     # normalize utilities so min non-zero utility is num_gpus
-    nonzeroutil_ngpus_tuples = [(x, y) for x, y in zip(candidate_utilities, candidate_allocations) if x > 0]
+    nonzeroutil_ngpus_tuples = [(x, y[1]) for x, y in zip(candidate_utilities, candidate_allocations) if x > 0]
     if len(nonzeroutil_ngpus_tuples) > 0:
       min_util, min_ngpus = min(nonzeroutil_ngpus_tuples, key=lambda x: x[0])
       norm_factor = (min_ngpus / min_util)

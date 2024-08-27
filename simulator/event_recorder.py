@@ -3,7 +3,7 @@ from rich import print as rprint
 class EventRecorder:
   def __init__(self, jobs, num_nodes, ngpus_per_node):
     self.jobs = jobs
-    rprint(f"Jobs: {jobs}")
+    # rprint(f"Jobs: {jobs}")
     self.active_jobs = {}
     self.num_nodes = num_nodes
     self.ngpus_per_node = ngpus_per_node

@@ -10,6 +10,8 @@ class SiaJobClass:
                          "bert": 1.2, "deepspeech2": 1.2, "ncf": 1.5, "default" : 1.0}
   RESTART_TIMES = {"cifar10": 50, "imagenet": 250, "yolov3": 80, 
                    "bert": 120, "deepspeech2": 25, "ncf": 15, "gpt_pmp": 30, "default": 30}
+  MAX_PROFILED_GPUS = {"azure": 40, "aws": 64, "dgx": 16, "dgx-ext": 16, "quad": 4, "rtx": 24}
+
   # progress_profile = {configs: list of configs per GPU type,
   #                     logs: List[ progress: progress at log time,
   #                                 goodputs: {GPU type: goodputs for all configs of GPU type}]}
