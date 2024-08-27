@@ -94,12 +94,14 @@ while event_recorder.current_time < 10000 or not all_jobs_complete:
   table.add_column("Category", justify="left", style="cyan", no_wrap=True)
   table.add_column("Status", justify="left", style="white", no_wrap=True)
   table.add_column("Runtime", justify="left", style="white", no_wrap=True)
+  table.add_column("Progress", justify="left", style="white", no_wrap=True)
   table.add_column("Restarts", justify="left", style="white", no_wrap=True)
   table.add_column("Allocation", justify="left", style="white", no_wrap=True)
 
   for jobname, job in active_jobs.items():
-    table.add_row(jobname, "SiaJob", job.status.name, str(round(job.time, 1)), str(job.num_restarts), \
-                  str(job.allocation))
+    progress_perc = round(job.progress / job.max_progress * 100, 2)
+    table.add_row(jobname, "SiaJob", job.status.name, str(round(job.time, 1)), str(progress_perc), \
+                  str(job.num_restarts), str(job.allocation))
 
   console = Console()
   console.print(table)
@@ -111,6 +113,7 @@ while event_recorder.current_time < 10000 or not all_jobs_complete:
       gpu_counts[cluster] += ngpus
   rprint(f"GPU usage:")
   for cluster, ngpus in gpu_counts.items():
+    assert ngpus <= total_cluster_gpus[cluster], "GPU type: {cluster} overallocated: allocated={ngpus} > available={total_cluster_gpus[cluster]}"
     rprint(f"\t{cluster} = {ngpus} / {total_cluster_gpus[cluster]} GPUs ({round(ngpus / total_cluster_gpus[cluster] * 100, 2)}%)")
   # print JCTs for all completed jobs
   completed_jobs = event_recorder.get_completed_jobs()

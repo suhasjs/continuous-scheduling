@@ -86,8 +86,8 @@ class SiaJobClass:
   def get_progress_rate(self, cur_progress, config):
     assert config is not None, "Config cannot be None"
     row_idx = np.searchsorted(self.progresses, cur_progress, side='left')
-    if row_idx == len(self.progresses):
-      return 0
+    if row_idx == len(self.progresses) - 1:
+      return 1, 1
     config_idx = self.configs_to_idx[config]
     rate = self.calibration_factor * self.progress_vals[row_idx, config_idx]
     valid_for = (self.progresses[row_idx + 1] - cur_progress) / rate
@@ -199,7 +199,7 @@ class SiaJob(AbstractJob):
       seconds_left -= run_for
 
       # check if job is completed
-      if np.abs(self.progress - self.max_progress) < 1e-2:
+      if np.abs(self.progress - self.max_progress) < 1e-2 or self.progress >= self.max_progress:
         # rprint(f"Job {self.name} completed: runtime={self.time}")
         self.status = JobStatus.COMPLETED
         self.progress = self.max_progress

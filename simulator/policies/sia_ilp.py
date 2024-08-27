@@ -12,6 +12,7 @@ class SiaILP(AbstractPolicy):
     self.cluster_ordering = sorted(list(num_nodes.keys()))
     self.num_gputypes = len(self.cluster_ordering)
     self.cluster_gpus = {cluster: num_nodes[cluster] * ngpus_per_node[cluster] for cluster in self.cluster_ordering}
+    self.max_ngpus = np.asarray([self.cluster_gpus[cluster] for cluster in self.cluster_ordering])
     self.total_num_gpus = sum(self.cluster_gpus.values())
 
     # populate configurations
@@ -71,6 +72,7 @@ class SiaILP(AbstractPolicy):
     for i, cluster in enumerate(self.cluster_ordering):
       cluster_nconfigs = len(config_ngpus[cluster])
       config_cnstr_matrix[i, start_idx : start_idx + cluster_nconfigs] = np.asarray(config_ngpus[cluster])
+      start_idx += cluster_nconfigs
     return configs, (config_cnstr_matrix, max_ngpus)
   
   def get_configurations(self):
@@ -138,10 +140,10 @@ class SiaILP(AbstractPolicy):
     # 1. Each job is allocated at-most one configuration
     constraints = []
     for i in range(num_jobs):
-      constraints.append(cp.sum(allocX[i, :]) == 1)
+      constraints.append(cp.sum(allocX[i, :]) <= 1)
     # 2. Sum of GPUs allocated to all jobs is less than total number of GPUs
     alloced_gpus = cp.matmul(self.config_cnstr_matrix, cp.sum(allocX, axis=0).T)
-    constraints.append(cp.sum(alloced_gpus) <= self.total_num_gpus)
+    constraints.append(alloced_gpus <= self.max_ngpus)
     # 3. X >= 0
     constraints.append(allocX >= 0)
 
@@ -162,6 +164,8 @@ class SiaILP(AbstractPolicy):
 
     # extract allocations
     allocs = allocX.value
+    alloced_gpus = np.matmul(self.config_cnstr_matrix, np.sum(allocs, axis=0))
+    # rprint(f"Allocated GPUs: {alloced_gpus}")
     for i, jobname in enumerate(job_ordering):
       job_alloc = allocs[i, :]
       if np.sum(job_alloc) == 0:
