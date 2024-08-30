@@ -5,6 +5,7 @@ from jobs.batch_inference_job import BatchInferenceJobClass
 from jobs.sia_job import SiaJob
 from jobs.batch_inference_job import BatchInferenceJob
 from event_recorder import EventRecorder
+from utils.solver_params import get_solver_params
 
 from argparse import ArgumentParser
 import numpy as np
@@ -16,6 +17,12 @@ from rich import print as rprint
 argparser = ArgumentParser()
 argparser.add_argument('--job-trace', type=str, default=None, help='Path to job trace file')
 argparser.add_argument('--round-duration', type=int, default=60, help='Duration of each round in seconds')
+argparser.add_argument('--cluster-scale', type=int, default=1, help='Scale factor for cluster size')
+argparser.add_argument('--solver-timeout', type=int, default=1200, help='Timeout for solver ( in seconds)')
+argparser.add_argument('--solver-rtol', type=float, default=1e-4, help='Relative solution tolerance for solver')
+argparser.add_argument('--solver-name', type=str, default="GLPK_MI", help='Solver to use for policy optimization')
+argparser.add_argument('--simulator-timeout', type=float, default=-1, help='How many seconds of simulation to run (-1 for infinite)')
+argparser.add_argument('--debug', action='store_true', help='Whether to pause after every simulator step')
 argparser.add_argument('--simulate-scheduler-delay', action='store_true', help='Whether to include scheduler latency in simulation: if True, the simulator will incorporate scheduler latency to next round duration [default: False]')
 
 # parse args
@@ -23,12 +30,22 @@ args = argparser.parse_args()
 round_duration = args.round_duration
 simulate_scheduler_delay = args.simulate_scheduler_delay
 job_trace_file = args.job_trace
+cluster_scale = args.cluster_scale
+solver_name = args.solver_name
+solver_timeout = args.solver_timeout
+simulator_timeout = args.simulator_timeout
+if simulator_timeout < 0:
+  simulator_timeout = 1e7
+solver_rtol = args.solver_rtol
+debug = args.debug
 
 # cluster configuration
 # cluster_nnodes = {"azure": 5, "aws": 16, "dgx-ext": 2, "quad": 1, "rtx": 3}
 # cluster_ngpus_per_node = {"aws": 4, "azure" : 8, "dgx-ext": 8, "quad" : 4, "rtx": 8}
-cluster_nnodes = {"azure": 5, "aws": 16, "dgx-ext": 4, "quad": 1, "rtx": 3}
-cluster_ngpus_per_node = {"aws": 4, "azure" : 8, "dgx-ext": 8, "quad" : 4, "rtx": 8}
+cluster_nnodes = {"aws": 6, "dgx-ext": 2, "rtx": 3}
+for cluster in cluster_nnodes.keys():
+  cluster_nnodes[cluster] *= cluster_scale
+cluster_ngpus_per_node = {"aws": 4, "dgx-ext": 8, "rtx": 8}
 total_cluster_gpus = {cluster: cluster_nnodes[cluster] * cluster_ngpus_per_node[cluster] for cluster in cluster_nnodes.keys()}
 
 # base sia job classes
@@ -67,12 +84,14 @@ event_recorder = EventRecorder(jobs, cluster_nnodes, cluster_ngpus_per_node)
 
 # initialize policy
 sia_policy_options = {'lambda_no_alloc': 1.1, 'p_value': 0.5}
-sia_solver_options = {'solver': 'GLPK_MI'}
+sia_solver_options = {'solver': solver_name}
+sia_solver_options.update(get_solver_params(solver_name, solver_timeout, solver_rtol))
+rprint(f"Policy solver options: {sia_solver_options}")
 policy = SiaILP(cluster_nnodes, cluster_ngpus_per_node, sia_policy_options, sia_solver_options)
 
 # simulate till all jobs complete
 all_jobs_complete = False
-while event_recorder.current_time < 1000000 and not all_jobs_complete:
+while event_recorder.current_time < simulator_timeout and not all_jobs_complete:
   all_jobs_complete = all([job.status == JobStatus.COMPLETED for job in jobs])
   if all_jobs_complete:
     break
@@ -140,5 +159,7 @@ while event_recorder.current_time < 1000000 and not all_jobs_complete:
   jcts_dict = {job.name: job.time for job in completed_jobs}
   avg_jct = np.mean(list(jcts_dict.values())) if len(jcts_dict) > 0 else 0
   rprint(f"Avg JCT: {avg_jct:.2f}")
-  rprint(f"JCTs: {jcts_dict}")
+  # rprint(f"JCTs: {jcts_dict}")
   rprint(f"--------------------------------------------")
+  if debug:
+    input("Press any key to continue...")
