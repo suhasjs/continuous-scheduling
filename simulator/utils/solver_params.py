@@ -13,8 +13,7 @@ def get_solver_params(solver_name, time_limit=None, rtol=None, mipgap=None):
   # for any solvers that can use multiple threads
   num_threads = 8
   if solver_name == 'GLPK_MI':
-    options = {'msg_lev': 'GLP_MSG_OFF', 'binarize' : True, 
-               'tm_lim' : time_limit*1000, 'mip_gap' : mipgap}
+    options = {'msg_lev': 'GLP_MSG_OFF', 'tm_lim' : time_limit*1000, 'mip_gap' : mipgap}
   elif solver_name == "GLPK":
     options = {'msg_lev': 'GLP_MSG_OFF', 'tm_lim' : time_limit*1000}
   elif solver_name == "CBC_MI":

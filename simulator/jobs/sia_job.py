@@ -64,7 +64,7 @@ class SiaJobClass:
       new_idx_to_configs[i] = config
     self.configs_to_idx = new_configs_to_idx
     self.idx_to_configs = new_idx_to_configs
-    rprint(f"Class: {self.model_name}, filtered configs: {self.configs_to_idx.keys()}")
+    # rprint(f"Class: {self.model_name}, filtered configs: {self.configs_to_idx.keys()}")
 
   # candidate_allocations: List of candidate allocations to evaluate
   # returns: List of normalized utilities for each candidate allocation
@@ -94,6 +94,17 @@ class SiaJobClass:
     rate = self.calibration_factor * self.progress_vals[row_idx, config_idx]
     valid_for = (self.progresses[row_idx + 1] - cur_progress) / rate
     return rate, valid_for
+
+def get_sia_job_classes(total_cluster_gpus):
+  sia_job_classes = {
+    'cifar10' : SiaJobClass("cifar10", "./jobs/profiles/cifar10.pkl", total_cluster_gpus),
+    'bert' : SiaJobClass("bert", "./jobs/profiles/bert.pkl", total_cluster_gpus),
+    'imagenet' : SiaJobClass("imagenet", "./jobs/profiles/imagenet.pkl", total_cluster_gpus),
+    'deepspeech2' : SiaJobClass("deepspeech2", "./jobs/profiles/deepspeech2.pkl", total_cluster_gpus),
+    'yolov3' : SiaJobClass("yolov3", "./jobs/profiles/yolov3.pkl", total_cluster_gpus),
+    'ncf' : SiaJobClass("ncf", "./jobs/profiles/ncf.pkl", total_cluster_gpus)
+  }
+  return sia_job_classes
 
 # Represents a class of jobs with only one phase
 # Progress functions do not change over time

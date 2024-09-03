@@ -1,9 +1,8 @@
 from policies.sia_ilp import SiaILP
 from jobs.job import JobStatus
-from jobs.sia_job import SiaJobClass
-from jobs.batch_inference_job import BatchInferenceJobClass
-from jobs.sia_job import SiaJob
-from jobs.batch_inference_job import BatchInferenceJob
+from jobs.sia_job import get_sia_job_classes, SiaJob
+from jobs.batch_inference_job import get_batch_inference_job_classes, BatchInferenceJob
+from jobs.synthetic_single_phase_job import get_synthetic_job_classes, SyntheticSinglePhaseJob
 from event_recorder import EventRecorder
 from utils.solver_params import get_solver_params
 
@@ -48,17 +47,10 @@ for cluster in cluster_nnodes.keys():
 cluster_ngpus_per_node = {"aws": 4, "dgx-ext": 8, "rtx": 8}
 total_cluster_gpus = {cluster: cluster_nnodes[cluster] * cluster_ngpus_per_node[cluster] for cluster in cluster_nnodes.keys()}
 
-# base sia job classes
-sia_job_classes = {}
-sia_job_classes['cifar10'] = SiaJobClass("cifar10", "./jobs/profiles/cifar10.pkl", total_cluster_gpus)
-sia_job_classes['bert'] = SiaJobClass("bert", "./jobs/profiles/bert.pkl", total_cluster_gpus)
-sia_job_classes['imagenet'] = SiaJobClass("imagenet", "./jobs/profiles/imagenet.pkl", total_cluster_gpus)
-sia_job_classes['deepspeech2'] = SiaJobClass("deepspeech2", "./jobs/profiles/deepspeech2.pkl", total_cluster_gpus)
-sia_job_classes['yolov3'] = SiaJobClass("yolov3", "./jobs/profiles/yolov3.pkl", total_cluster_gpus)
-sia_job_classes['ncf'] = SiaJobClass("ncf", "./jobs/profiles/ncf.pkl", total_cluster_gpus)
-batch_inference_job_classes = {"imagenet_resnet50": BatchInferenceJobClass("imagenet_resnet50"), 
-                               "llama_8b_wikipedia": BatchInferenceJobClass("llama_8b_wikipedia"),
-                               "llama_8b_commoncrawl": BatchInferenceJobClass("llama_8b_commoncrawl")}
+# Objects for job classes
+sia_job_classes = get_sia_job_classes(total_cluster_gpus)
+batch_inference_job_classes = get_batch_inference_job_classes(total_cluster_gpus)
+synthetic_job_classes = get_synthetic_job_classes(total_cluster_gpus)
 
 # load job trace
 jobs = []
@@ -67,6 +59,7 @@ with open(job_trace_file, 'r') as f:
 for i, row in jobs_pd.iterrows():
   is_sia_job = (row['category'] == 'SiaJob')
   is_batch_inference_job = (row['category'] == 'BatchInferenceJob')
+  is_synthetic_job = (row['category'] == 'SyntheticSinglePhaseJob')
   if is_sia_job:
     model_class = row['application']
     model_obj = sia_job_classes[model_class]
@@ -75,6 +68,10 @@ for i, row in jobs_pd.iterrows():
     model_class = row['application']
     model_obj = batch_inference_job_classes[model_class]
     job = BatchInferenceJob(row['name'], row['time'], model_obj)
+  elif is_synthetic_job:
+    model_class = row['application']
+    model_obj = synthetic_job_classes[model_class]
+    job = SyntheticSinglePhaseJob(row['name'], row['time'], model_obj)
   else:
     raise ValueError(f"Job category {row['category']} not supported")
   jobs.append(job)
@@ -135,11 +132,15 @@ while event_recorder.current_time < simulator_timeout and not all_jobs_complete:
     progress_perc = round(job.progress / job.max_progress * 100, 2)
     is_sia_job = isinstance(job, SiaJob)
     is_batch_inference_job = isinstance(job, BatchInferenceJob)
+    is_synthetic_job = isinstance(job, SyntheticSinglePhaseJob)
     if is_sia_job:
       table.add_row(jobname, "SiaJob", job.status.name, str(round(job.time, 1)), str(progress_perc), \
                     str(job.num_restarts), str(job.allocation))
     elif is_batch_inference_job:
       table.add_row(jobname, "BatchInferenceJob", job.status.name, str(round(job.time, 1)), str(progress_perc), \
+                    "-", str(job.allocation))
+    elif is_synthetic_job:
+      table.add_row(jobname, "SyntheticSinglePhaseJob", job.status.name, str(round(job.time, 1)), str(progress_perc), \
                     "-", str(job.allocation))
 
   console = Console()
@@ -162,4 +163,8 @@ while event_recorder.current_time < simulator_timeout and not all_jobs_complete:
   # rprint(f"JCTs: {jcts_dict}")
   rprint(f"--------------------------------------------")
   if debug:
-    input("Press any key to continue...")
+    key = input("Press any key to continue... [c to disable debug, x to exit]")
+    if key == 'c':
+      debug = False
+    elif key == 'x':
+      break

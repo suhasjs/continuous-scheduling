@@ -43,5 +43,6 @@ class EventRecorder:
   
   def get_completed_jobs(self):
     return [job for job in self.jobs if job.status == JobStatus.COMPLETED]
+  
   def simulate_failure(self, node_id):
     pass
