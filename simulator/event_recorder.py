@@ -30,9 +30,9 @@ class EventRecorder:
     
     # new jobs to add
     new_jobs = {job.name:job for job in self.jobs if job.submission_time < self.current_time and job.status == JobStatus.INVALID}
-    rprint(f"New jobs: {new_jobs}")
+    # rprint(f"New jobs: {list(new_jobs.keys())}")
     for job in new_jobs.values():
-      rprint(f"Adding job {job.name} to active jobs")
+      # rprint(f"Adding job {job.name} to active jobs")
       self.active_jobs[job.name] = job
       job.status = JobStatus.QUEUED
     

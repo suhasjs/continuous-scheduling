@@ -39,12 +39,12 @@ solver_rtol = args.solver_rtol
 debug = args.debug
 
 # cluster configuration
-# cluster_nnodes = {"azure": 5, "aws": 16, "dgx-ext": 2, "quad": 1, "rtx": 3}
-# cluster_ngpus_per_node = {"aws": 4, "azure" : 8, "dgx-ext": 8, "quad" : 4, "rtx": 8}
-cluster_nnodes = {"aws": 6, "dgx-ext": 2, "rtx": 3}
+cluster_nnodes = {"azure": 5, "aws": 16, "dgx-ext": 2, "quad": 1, "rtx": 3, "a10-pcie": 4, "a100-pcie": 4}
+cluster_ngpus_per_node = {"aws": 4, "azure" : 8, "dgx-ext": 8, "quad" : 4, "rtx": 8, "a10-pcie": 4, "a100-pcie": 4}
+# cluster_nnodes = {"aws": 6, "dgx-ext": 2, "rtx": 3}
 for cluster in cluster_nnodes.keys():
   cluster_nnodes[cluster] *= cluster_scale
-cluster_ngpus_per_node = {"aws": 4, "dgx-ext": 8, "rtx": 8}
+# cluster_ngpus_per_node = {"aws": 4, "dgx-ext": 8, "rtx": 8}
 total_cluster_gpus = {cluster: cluster_nnodes[cluster] * cluster_ngpus_per_node[cluster] for cluster in cluster_nnodes.keys()}
 
 # Objects for job classes
@@ -89,6 +89,9 @@ policy = SiaILP(cluster_nnodes, cluster_ngpus_per_node, sia_policy_options, sia_
 # simulate till all jobs complete
 all_jobs_complete = False
 while event_recorder.current_time < simulator_timeout and not all_jobs_complete:
+  print_str = ['-']*80
+  print_str = "".join(print_str)
+  rprint(print_str)
   all_jobs_complete = all([job.status == JobStatus.COMPLETED for job in jobs])
   if all_jobs_complete:
     break
@@ -100,6 +103,9 @@ while event_recorder.current_time < simulator_timeout and not all_jobs_complete:
   # make changes to policy
   policy.remove_completed_jobs(completions)
   policy.add_new_jobs(arrivals)
+  # green text for arrivals
+  rprint(f"\t[green]Arrivals: {list(arrivals.keys())}")
+  rprint(f"\t[red]Completions: {completions}")
 
   # get updated utilities
   active_jobs = event_recorder.get_active_jobs()
@@ -129,18 +135,18 @@ while event_recorder.current_time < simulator_timeout and not all_jobs_complete:
   table.add_column("Allocation", justify="left", style="white", no_wrap=True)
 
   for jobname, job in active_jobs.items():
-    progress_perc = round(job.progress / job.max_progress * 100, 2)
+    progress_perc = str(round(job.progress / job.max_progress * 100, 2)) + "%"
     is_sia_job = isinstance(job, SiaJob)
     is_batch_inference_job = isinstance(job, BatchInferenceJob)
     is_synthetic_job = isinstance(job, SyntheticSinglePhaseJob)
     if is_sia_job:
-      table.add_row(jobname, "SiaJob", job.status.name, str(round(job.time, 1)), str(progress_perc), \
+      table.add_row(jobname, "SiaJob", job.status.name, str(round(job.time, 1)), progress_perc, \
                     str(job.num_restarts), str(job.allocation))
     elif is_batch_inference_job:
-      table.add_row(jobname, "BatchInferenceJob", job.status.name, str(round(job.time, 1)), str(progress_perc), \
+      table.add_row(jobname, "BatchInferenceJob", job.status.name, str(round(job.time, 1)), progress_perc, \
                     "-", str(job.allocation))
     elif is_synthetic_job:
-      table.add_row(jobname, "SyntheticSinglePhaseJob", job.status.name, str(round(job.time, 1)), str(progress_perc), \
+      table.add_row(jobname, "SyntheticSinglePhaseJob", job.status.name, str(round(job.time, 1)), progress_perc, \
                     "-", str(job.allocation))
 
   console = Console()
@@ -161,7 +167,7 @@ while event_recorder.current_time < simulator_timeout and not all_jobs_complete:
   avg_jct = np.mean(list(jcts_dict.values())) if len(jcts_dict) > 0 else 0
   rprint(f"Avg JCT: {avg_jct:.2f}")
   # rprint(f"JCTs: {jcts_dict}")
-  rprint(f"--------------------------------------------")
+  
   if debug:
     key = input("Press any key to continue... [c to disable debug, x to exit]")
     if key == 'c':

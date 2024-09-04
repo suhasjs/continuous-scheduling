@@ -87,6 +87,7 @@ class SiaJobClass:
   #          and valid_for is the time until the next progress log
   def get_progress_rate(self, cur_progress, config):
     assert config is not None, "Config cannot be None"
+    assert config in self.configs_to_idx, f"Config {config} not found in configs_to_idx"
     row_idx = np.searchsorted(self.progresses, cur_progress, side='left')
     if row_idx == len(self.progresses) - 1:
       return 1, 1

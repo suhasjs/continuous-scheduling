@@ -64,13 +64,13 @@ class BatchInferenceJob(AbstractJob):
   
   def evaluate_allocations(self, candidate_allocations):
     utilities = self.jobclass.evaluate_allocations(candidate_allocations)
-    rprint(f"Job: {self.name}, utilities: {list(zip(candidate_allocations, utilities))}")
+    # rprint(f"Job: {self.name}, utilities: {list(zip(candidate_allocations, utilities))}")
     return utilities
   
   def reallocate(self, new_allocation):
     if self.allocation == new_allocation:
       return
-    rprint(f"Job: {self.name}, change of allocation: {self.allocation} -> {new_allocation}")
+    # rprint(f"Job: {self.name}, change of allocation: {self.allocation} -> {new_allocation}")
     if self.allocation is not None and new_allocation is not None:
       self.events.append((self.time, self.progress, JobStatus.REALLOCATING, (self.allocation, new_allocation)))
       self.allocation = new_allocation
