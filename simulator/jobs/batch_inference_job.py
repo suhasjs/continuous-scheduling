@@ -14,6 +14,9 @@ class BatchInferenceJobClass:
       raise ValueError(f"Model {model_name} not supported")
     self.scale_unit = {cluster: profile["min_gpus"] for cluster, profile in self.profiles["gpu_profiles"].items()}
     self.max_progress = self.profiles["num_iters"]
+    # TODO :: make this a configurable parameter
+    # setting to 16 to not let it take up all GPUs
+    self.max_scale_units = 8
     self.speedup = self.profiles["sim_speedup"]
 
   def evaluate_allocations(self, candidate_allocations):
@@ -25,7 +28,10 @@ class BatchInferenceJobClass:
         profile = self.profiles["gpu_profiles"][gpu_type]
         per_unit_throughput = profile["throughput"]
         num_units = ngpus // self.scale_unit[gpu_type]
-        throughput = per_unit_throughput * num_units
+        if num_units > self.max_scale_units:
+          throughput = 0
+        else:
+          throughput = per_unit_throughput * num_units
         candidate_utilities.append(throughput)
     # normalize utilities so min non-zero utility is num_gpus
     nonzeroutil_ngpus_tuples = [(x, y[1]) for x, y in zip(candidate_utilities, candidate_allocations) if x > 0]
@@ -70,7 +76,7 @@ class BatchInferenceJob(AbstractJob):
   def reallocate(self, new_allocation):
     if self.allocation == new_allocation:
       return
-    # rprint(f"Job: {self.name}, change of allocation: {self.allocation} -> {new_allocation}")
+    rprint(f"Job: {self.name}, change of allocation: {self.allocation} -> {new_allocation}")
     if self.allocation is not None and new_allocation is not None:
       self.events.append((self.time, self.progress, JobStatus.REALLOCATING, (self.allocation, new_allocation)))
       self.allocation = new_allocation
@@ -80,6 +86,7 @@ class BatchInferenceJob(AbstractJob):
       self.status = JobStatus.RUNNING
       self.events.append((self.time, self.progress, self.status, self.allocation))
     else:
+      self.allocation = new_allocation
       self.status = JobStatus.QUEUED
       self.events.append((self.time, self.progress, self.status, None))
 

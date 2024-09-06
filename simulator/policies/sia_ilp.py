@@ -63,9 +63,10 @@ class SiaILP(AbstractPolicy):
         # grab whole nodes for distributed allocs
           nnodes += 1
           ngpus = nnodes * self.ngpus_per_node[cluster]
-      rprint(f"GPU type: {cluster}, max_ngpus: {max_ngpus}, configs: {configs}")
+      rprint(f"GPU type: {cluster}, max_ngpus: {max_ngpus}, #configs: {len(config_ngpus[cluster])}")
     # construct constraint matrix
     num_configs = len(configs)
+    rprint(f"Total #configs: {num_configs}")
     config_cnstr_matrix = np.zeros(shape=(self.num_gputypes, num_configs))
     start_idx = 0
     max_ngpus = np.asarray([self.cluster_gpus[cluster] for cluster in self.cluster_ordering])
@@ -157,15 +158,17 @@ class SiaILP(AbstractPolicy):
     solve_end = time.time()
     if prob.status != cp.OPTIMAL:
       rprint(f"ERROR :: ILP did not converge to optimal solution")
-      rprint(f"Solver status: {prob.status}")
+      rprint(f"Solver status: {prob.status}, exited after {(solve_end - solve_start):.2f} seconds")
     else:
-      rprint(f"Solver finished in {(solve_end - setup_start):.2f} seconds")
-      rprint(f"\t Setup: {(setup_end - setup_start):.2f} seconds, Solve: {(solve_end - solve_start):.2f} seconds")
+      rprint(f"Problem size: {num_jobs}x{num_configs}={num_jobs*num_configs/1000:.1f}k vars, solver time: {(solve_end - setup_start)*1000:.2f} ms, optimal value: {prob.value:.2f}")
+      rprint(f"\t Setup: {(setup_end - setup_start)*1000:.2f} ms, Solve: {(solve_end - solve_start)*1000:.2f} ms")
 
     # extract allocations
-    allocs = allocX.value
+    allocs = allocX.value.round(1)
     alloced_gpus = np.matmul(self.config_cnstr_matrix, np.sum(allocs, axis=0))
+    assert np.all(alloced_gpus <= self.max_ngpus), f"GPU allocation exceeds available GPUs: {alloced_gpus} >= {self.max_ngpus}"
     # rprint(f"Allocated GPUs: {alloced_gpus}")
+    cluster_alloced_gpus = {cluster: 0 for cluster in self.cluster_ordering}
     for i, jobname in enumerate(job_ordering):
       job_alloc = allocs[i, :]
       if np.sum(job_alloc) == 0:
@@ -173,10 +176,15 @@ class SiaILP(AbstractPolicy):
       elif np.sum(job_alloc) == 1:
         job_alloc_idx = np.argmax(job_alloc)
         alloc_config = self.configs[job_alloc_idx]
+        _, ngpus, cluster = alloc_config
+        cluster_alloced_gpus[cluster] += ngpus
         self.allocations[jobname] = alloc_config
       else:
-        rprint(f"ERROR :: Job {jobname} has multiple allocations")
+        rprint(f"[red]ERROR :: Job {jobname} has invalid allocation: {np.sum(job_alloc)}[/red]")
         self.allocations[jobname] = None
-    
+    rprint(f"Cluster GPU usage:")
+    for cluster, ngpus in cluster_alloced_gpus.items():
+      assert ngpus <= self.cluster_gpus[cluster], f"GPU type: {cluster} overallocated: allocated={ngpus} > available={self.cluster_gpus[cluster]}"
+      rprint(f"\t{cluster} = {ngpus} / {self.cluster_gpus[cluster]} GPUs ({round(ngpus / self.cluster_gpus[cluster] * 100, 2)}%)")
   def get_allocations(self):
     return self.allocations

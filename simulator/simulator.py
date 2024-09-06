@@ -17,7 +17,7 @@ argparser = ArgumentParser()
 argparser.add_argument('--job-trace', type=str, default=None, help='Path to job trace file')
 argparser.add_argument('--round-duration', type=int, default=60, help='Duration of each round in seconds')
 argparser.add_argument('--cluster-scale', type=int, default=1, help='Scale factor for cluster size')
-argparser.add_argument('--solver-timeout', type=int, default=1200, help='Timeout for solver ( in seconds)')
+argparser.add_argument('--solver-timeout', type=int, default=1200, help='Timeout for solver (in seconds)')
 argparser.add_argument('--solver-rtol', type=float, default=1e-4, help='Relative solution tolerance for solver')
 argparser.add_argument('--solver-name', type=str, default="GLPK_MI", help='Solver to use for policy optimization')
 argparser.add_argument('--simulator-timeout', type=float, default=-1, help='How many seconds of simulation to run (-1 for infinite)')
@@ -39,7 +39,7 @@ solver_rtol = args.solver_rtol
 debug = args.debug
 
 # cluster configuration
-cluster_nnodes = {"azure": 5, "aws": 16, "dgx-ext": 2, "quad": 1, "rtx": 3, "a10-pcie": 4, "a100-pcie": 4}
+cluster_nnodes = {"azure": 5, "aws": 8, "dgx-ext": 4, "quad": 4, "rtx": 4, "a10-pcie": 4, "a100-pcie": 4}
 cluster_ngpus_per_node = {"aws": 4, "azure" : 8, "dgx-ext": 8, "quad" : 4, "rtx": 8, "a10-pcie": 4, "a100-pcie": 4}
 # cluster_nnodes = {"aws": 6, "dgx-ext": 2, "rtx": 3}
 for cluster in cluster_nnodes.keys():
@@ -159,7 +159,7 @@ while event_recorder.current_time < simulator_timeout and not all_jobs_complete:
       gpu_counts[cluster] += ngpus
   rprint(f"GPU usage:")
   for cluster, ngpus in gpu_counts.items():
-    assert ngpus <= total_cluster_gpus[cluster], "GPU type: {cluster} overallocated: allocated={ngpus} > available={total_cluster_gpus[cluster]}"
+    assert ngpus <= total_cluster_gpus[cluster], f"GPU type: {cluster} overallocated: allocated={ngpus} > available={total_cluster_gpus[cluster]}"
     rprint(f"\t{cluster} = {ngpus} / {total_cluster_gpus[cluster]} GPUs ({round(ngpus / total_cluster_gpus[cluster] * 100, 2)}%)")
   # print JCTs for all completed jobs
   completed_jobs = event_recorder.get_completed_jobs()

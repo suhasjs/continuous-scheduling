@@ -1,5 +1,6 @@
 from jobs.job import JobStatus
 from rich import print as rprint
+import time
 class EventRecorder:
   def __init__(self, jobs, num_nodes, ngpus_per_node):
     self.jobs = jobs
@@ -13,6 +14,7 @@ class EventRecorder:
 
   # accumulate events for `seconds` time and return the events
   def step(self, seconds):
+    t_start = time.time()
     # step all active jobs for `seconds` time
     for job in self.active_jobs.values():
       job.step(seconds)
@@ -35,7 +37,8 @@ class EventRecorder:
       # rprint(f"Adding job {job.name} to active jobs")
       self.active_jobs[job.name] = job
       job.status = JobStatus.QUEUED
-    
+    t_end = time.time()
+    rprint(f"[cyan]EventRecorder::step took {(t_end - t_start)*1000:.2f} ms for {len(self.active_jobs)} active jobs[/cyan]")
     return {"arrivals": new_jobs, "completions": completed_jobs}
   
   def get_active_jobs(self):

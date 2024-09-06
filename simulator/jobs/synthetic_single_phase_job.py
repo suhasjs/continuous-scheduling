@@ -102,6 +102,7 @@ class SyntheticSinglePhaseJob(AbstractJob):
       self.status = JobStatus.RUNNING
       self.events.append((self.time, self.progress, self.status, self.allocation))
     else:
+      self.allocation = new_allocation
       self.status = JobStatus.QUEUED
       self.events.append((self.time, self.progress, self.status, None))
 

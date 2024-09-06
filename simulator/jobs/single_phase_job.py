@@ -1,5 +1,5 @@
 from .job import AbstractJob, JobStatus
-
+from rich import print as rprint
 # Represents a class of jobs with only one phase
 # Progress functions do not change over time
 class SinglePhaseJob(AbstractJob):
@@ -29,6 +29,9 @@ class SinglePhaseJob(AbstractJob):
     return candidate_utilities
   
   def reallocate(self, new_allocation):
+    if self.allocation == new_allocation:
+      return
+    rprint(f"Job: {self.name}, change of allocation: {self.allocation} -> {new_allocation}")
     if self.allocation is not None and new_allocation is not None:
       self.events.append((self.time, self.progress, JobStatus.REALLOCATING, (self.allocation, new_allocation)))
       self.allocation = new_allocation
@@ -38,6 +41,7 @@ class SinglePhaseJob(AbstractJob):
       self.status = JobStatus.RUNNING
       self.events.append((self.time, self.progress, self.status, self.allocation))
     else:
+      self.allocation = new_allocation
       self.status = JobStatus.QUEUED
       self.events.append((self.time, self.progress, self.status, None))
 
