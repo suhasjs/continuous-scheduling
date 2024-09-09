@@ -16,7 +16,7 @@ class SiaILP(AbstractPolicy):
     self.total_num_gpus = sum(self.cluster_gpus.values())
 
     # populate configurations
-    self.configs, configs_cnstrs = self.__get_configurations()
+    self.configs, configs_cnstrs = self._get_configurations()
     self.config_cnstr_matrix, self.config_cnstr_vec = configs_cnstrs
 
     # policy parameters
@@ -40,7 +40,7 @@ class SiaILP(AbstractPolicy):
 
   # Configurations are tuples of (num_nodes, num_gpus, cluster)
   # Each configuration is a candidate allocation in a given heterogeneous GPU cluster
-  def __get_configurations(self):
+  def _get_configurations(self):
     configs_to_idx = {}
     configs = []
     config_ngpus = {}
@@ -120,6 +120,7 @@ class SiaILP(AbstractPolicy):
               "solver_status": "optimal", "objective_val": 0}
       self.stats.append(stat)
       return
+    
     num_configs = len(self.configs)
     allocX = cp.Variable((num_jobs, num_configs), boolean=True)
     cost_matrix = np.zeros((num_jobs, num_configs))
