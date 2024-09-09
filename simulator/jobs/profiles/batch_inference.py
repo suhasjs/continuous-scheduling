@@ -10,7 +10,7 @@ imagenet_resnet50 = {
     "quadro" : {"min_gpus": 1, "batch_size": 192, "throughput": 489},
     "rtx" : {"min_gpus": 1, "batch_size" : 64, "throughput": 440}
   },
-  'sim_speedup' : 10 # 10x speedup relative to wall-clock time
+  'sim_speedup' : 1 # 10x speedup relative to wall-clock time
 }
 
 llama_8b_wikipedia = {
