@@ -34,7 +34,9 @@ class SiaILP(AbstractPolicy):
     self.allocations = {}
     self.job_utilities = {}
     self.current_time = 0
-    pass
+
+    # stats
+    self.solver_stats = []
 
   # Configurations are tuples of (num_nodes, num_gpus, cluster)
   # Each configuration is a candidate allocation in a given heterogeneous GPU cluster
@@ -114,6 +116,9 @@ class SiaILP(AbstractPolicy):
     # create inputs to the ILP
     num_jobs = len(self.active_jobs)
     if num_jobs == 0:
+      stat = {"time": self.current_time, "num_jobs": 0, "num_vars": 0, "setup_time_ms": 0, "solve_time_ms": 0,
+              "solver_status": "optimal", "objective_val": 0}
+      self.stats.append(stat)
       return
     num_configs = len(self.configs)
     allocX = cp.Variable((num_jobs, num_configs), boolean=True)
@@ -157,11 +162,18 @@ class SiaILP(AbstractPolicy):
     prob.solve(solver=cp_solver, verbose=False, **self.solver_options)
     solve_end = time.time()
     if prob.status != cp.OPTIMAL:
-      rprint(f"ERROR :: ILP did not converge to optimal solution")
+      rprint(f"ERROR :: ILP did not converge to optimal solution; returning previous solution")
       rprint(f"Solver status: {prob.status}, exited after {(solve_end - solve_start):.2f} seconds")
+      return self.allocations
     else:
       rprint(f"Problem size: {num_jobs}x{num_configs}={num_jobs*num_configs/1000:.1f}k vars, solver time: {(solve_end - setup_start)*1000:.2f} ms, optimal value: {prob.value:.2f}")
       rprint(f"\t Setup: {(setup_end - setup_start)*1000:.2f} ms, Solve: {(solve_end - solve_start)*1000:.2f} ms")
+    
+    stat = {"time": self.current_time, "num_jobs": num_jobs, "num_vars": num_jobs*num_configs, 
+            "setup_time_ms": (setup_end - setup_start)*1000, "solve_time_ms": (solve_end - solve_start)*1000, 
+            "solver_status": str(prob.status), "objective_val": prob.value}
+    self.solver_stats.append(stat)
+    # rprint(f"Solver stats: {stat}")
 
     # extract allocations
     allocs = allocX.value.round(1)
@@ -182,9 +194,11 @@ class SiaILP(AbstractPolicy):
       else:
         rprint(f"[red]ERROR :: Job {jobname} has invalid allocation: {np.sum(job_alloc)}[/red]")
         self.allocations[jobname] = None
+    '''
     rprint(f"Cluster GPU usage:")
     for cluster, ngpus in cluster_alloced_gpus.items():
       assert ngpus <= self.cluster_gpus[cluster], f"GPU type: {cluster} overallocated: allocated={ngpus} > available={self.cluster_gpus[cluster]}"
       rprint(f"\t{cluster} = {ngpus} / {self.cluster_gpus[cluster]} GPUs ({round(ngpus / self.cluster_gpus[cluster] * 100, 2)}%)")
+    '''
   def get_allocations(self):
     return self.allocations

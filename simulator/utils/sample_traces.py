@@ -44,7 +44,9 @@ def generate(num_jobs, start=0, duration=24, seed=0, trace="philly", oversample=
 
   for row_idx in row_idxs:
       row = trace.iloc[row_idx]
-      new_job = {"time": row.time}
+      # add random time offset to the job submission time (up to 1 minute)
+      random_time_offset = row_rng.random() * 60
+      new_job = {"time": row.time + random_time_offset}
       # <0.1 GPU hrs: SiaJob[cifar10*0.8, ncf*0.2], BatchInferenceJob[imagenet_resnet50]
       if row.gpu_time < 0.1 * 3600:
         category_choice = category_rngs[0].choice(["SiaJob", "BatchInferenceJob"], p=[0.85, 0.15])

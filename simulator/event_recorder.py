@@ -11,6 +11,7 @@ class EventRecorder:
     self.total_num_gpus = {cluster: num_nodes[cluster] * ngpus_per_node[cluster] for cluster in num_nodes.keys()}
     self.failed_nodes = None
     self.current_time = 0
+    self.job_completions = []
 
   # accumulate events for `seconds` time and return the events
   def step(self, seconds):
@@ -28,6 +29,10 @@ class EventRecorder:
         completed_jobs.append(jobname)
       # remove completed jobs
     for jobname in completed_jobs:
+      job_obj = self.active_jobs[jobname]
+      entry = {"name": jobname, "submission_time": job_obj.submission_time, 
+               "jct": job_obj.time}
+      self.job_completions.append(entry)
       self.active_jobs.pop(jobname)
     
     # new jobs to add

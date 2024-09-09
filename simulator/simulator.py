@@ -9,9 +9,11 @@ from utils.solver_params import get_solver_params
 from argparse import ArgumentParser
 import numpy as np
 import pandas as pd
+import pickle
 from rich.console import Console
 from rich.table import Table
 from rich import print as rprint
+
 
 argparser = ArgumentParser()
 argparser.add_argument('--job-trace', type=str, default=None, help='Path to job trace file')
@@ -22,6 +24,8 @@ argparser.add_argument('--solver-rtol', type=float, default=1e-4, help='Relative
 argparser.add_argument('--solver-name', type=str, default="GLPK_MI", help='Solver to use for policy optimization')
 argparser.add_argument('--simulator-timeout', type=float, default=-1, help='How many seconds of simulation to run (-1 for infinite)')
 argparser.add_argument('--debug', action='store_true', help='Whether to pause after every simulator step')
+argparser.add_argument('--output-log', type=str, help='Filename to log solver stats to', default=None)
+argparser.add_argument('--disable-status', action='store_true', help='Whether to stop displaying status updates per step')
 argparser.add_argument('--simulate-scheduler-delay', action='store_true', help='Whether to include scheduler latency in simulation: if True, the simulator will incorporate scheduler latency to next round duration [default: False]')
 
 # parse args
@@ -37,6 +41,7 @@ if simulator_timeout < 0:
   simulator_timeout = 1e7
 solver_rtol = args.solver_rtol
 debug = args.debug
+disable_status = args.disable_status
 
 # cluster configuration
 cluster_nnodes = {"azure": 5, "aws": 8, "dgx-ext": 4, "quad": 4, "rtx": 4, "a10-pcie": 4, "a100-pcie": 4}
@@ -46,6 +51,7 @@ for cluster in cluster_nnodes.keys():
   cluster_nnodes[cluster] *= cluster_scale
 # cluster_ngpus_per_node = {"aws": 4, "dgx-ext": 8, "rtx": 8}
 total_cluster_gpus = {cluster: cluster_nnodes[cluster] * cluster_ngpus_per_node[cluster] for cluster in cluster_nnodes.keys()}
+rprint(f"Cluster size: {sum(total_cluster_gpus.values())} GPUs")
 
 # Objects for job classes
 sia_job_classes = get_sia_job_classes(total_cluster_gpus)
@@ -88,6 +94,7 @@ policy = SiaILP(cluster_nnodes, cluster_ngpus_per_node, sia_policy_options, sia_
 
 # simulate till all jobs complete
 all_jobs_complete = False
+time_stats = []
 while event_recorder.current_time < simulator_timeout and not all_jobs_complete:
   print_str = ['-']*80
   print_str = "".join(print_str)
@@ -125,32 +132,33 @@ while event_recorder.current_time < simulator_timeout and not all_jobs_complete:
     job = active_jobs[jobname]
     job.reallocate(new_alloc)
 
-  table = Table(title=f"SIMULATOR TIME:{event_recorder.current_time}")
-  table.add_column("Jobname", justify="left", style="cyan", no_wrap=True)
-  table.add_column("Category", justify="left", style="cyan", no_wrap=True)
-  table.add_column("Status", justify="left", style="white", no_wrap=True)
-  table.add_column("Runtime", justify="left", style="white", no_wrap=True)
-  table.add_column("Progress", justify="left", style="white", no_wrap=True)
-  table.add_column("Restarts", justify="left", style="white", no_wrap=True)
-  table.add_column("Allocation", justify="left", style="white", no_wrap=True)
+  # print status
+  if not disable_status:
+    table = Table(title=f"SIMULATOR TIME:{event_recorder.current_time}")
+    table.add_column("Jobname", justify="left", style="cyan", no_wrap=True)
+    table.add_column("Category", justify="left", style="cyan", no_wrap=True)
+    table.add_column("Status", justify="left", style="white", no_wrap=True)
+    table.add_column("Runtime", justify="left", style="white", no_wrap=True)
+    table.add_column("Progress", justify="left", style="white", no_wrap=True)
+    table.add_column("Restarts", justify="left", style="white", no_wrap=True)
+    table.add_column("Allocation", justify="left", style="white", no_wrap=True)
 
-  for jobname, job in active_jobs.items():
-    progress_perc = str(round(job.progress / job.max_progress * 100, 2)) + "%"
-    is_sia_job = isinstance(job, SiaJob)
-    is_batch_inference_job = isinstance(job, BatchInferenceJob)
-    is_synthetic_job = isinstance(job, SyntheticSinglePhaseJob)
-    if is_sia_job:
-      table.add_row(jobname, "SiaJob", job.status.name, str(round(job.time, 1)), progress_perc, \
-                    str(job.num_restarts), str(job.allocation))
-    elif is_batch_inference_job:
-      table.add_row(jobname, "BatchInferenceJob", job.status.name, str(round(job.time, 1)), progress_perc, \
-                    "-", str(job.allocation))
-    elif is_synthetic_job:
-      table.add_row(jobname, "SyntheticSinglePhaseJob", job.status.name, str(round(job.time, 1)), progress_perc, \
-                    "-", str(job.allocation))
-
-  console = Console()
-  console.print(table)
+    for jobname, job in active_jobs.items():
+      progress_perc = str(round(job.progress / job.max_progress * 100, 2)) + "%"
+      is_sia_job = isinstance(job, SiaJob)
+      is_batch_inference_job = isinstance(job, BatchInferenceJob)
+      is_synthetic_job = isinstance(job, SyntheticSinglePhaseJob)
+      if is_sia_job:
+        table.add_row(jobname, "SiaJob", job.status.name, str(round(job.time, 1)), progress_perc, \
+                      str(job.num_restarts), str(job.allocation))
+      elif is_batch_inference_job:
+        table.add_row(jobname, "BatchInferenceJob", job.status.name, str(round(job.time, 1)), progress_perc, \
+                      "-", str(job.allocation))
+      elif is_synthetic_job:
+        table.add_row(jobname, "SyntheticSinglePhaseJob", job.status.name, str(round(job.time, 1)), progress_perc, \
+                      "-", str(job.allocation))
+    console = Console()
+    console.print(table)
   # print resource consumption
   gpu_counts = {cluster: 0 for cluster in cluster_nnodes.keys()}
   for jobname, job in active_jobs.items():
@@ -165,7 +173,7 @@ while event_recorder.current_time < simulator_timeout and not all_jobs_complete:
   completed_jobs = event_recorder.get_completed_jobs()
   jcts_dict = {job.name: job.time for job in completed_jobs}
   avg_jct = np.mean(list(jcts_dict.values())) if len(jcts_dict) > 0 else 0
-  rprint(f"Avg JCT: {avg_jct:.2f}")
+  rprint(f"Avg JCT: {avg_jct:.2f}, Active jobs: {len(active_jobs)}, Completed jobs: {len(completed_jobs)}")
   # rprint(f"JCTs: {jcts_dict}")
   
   if debug:
@@ -174,3 +182,9 @@ while event_recorder.current_time < simulator_timeout and not all_jobs_complete:
       debug = False
     elif key == 'x':
       break
+
+if args.output_log is not None:
+  logfile_name = args.output_log
+  with open(logfile_name, 'wb') as f:
+    dump_dict = {"solver_stats": policy.solver_stats, "jcts": event_recorder.job_completions}
+    pickle.dump(dump_dict, f)
