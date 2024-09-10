@@ -29,6 +29,8 @@ class SiaLPRelaxed(SiaILP):
     self.solver_name = solver_options.get('solver', 'GLPK')
     self.solver_maps = {'GLPK': cp.GLPK, 'ECOS': cp.ECOS, 'CBC': cp.CBC, "SCS": cp.SCS, "OSQP": cp.OSQP}
     self.solver_options.pop('solver', None)
+    self.warm_start = solver_options.get('warm_start', False)
+    self.solver_options.pop('warm_start', None)
 
     # cluster state
     self.active_jobs = {}
@@ -115,7 +117,11 @@ class SiaLPRelaxed(SiaILP):
     solve_start = time.time()
     cp_solver = self.solver_maps[self.solver_name]
     # print(f"Problem: {prob}")
-    prob.solve(solver=cp_solver, verbose=False, **self.solver_options)
+    if self.warm_start:
+      rprint(f"[yellow]Warm starting ILP solver with previous timestep solution...[/yellow]")
+      warm_start_allocs = super().get_warm_start_guess(job_ordering)
+      allocX.value = warm_start_allocs
+    prob.solve(solver=cp_solver, verbose=False, warm_start=self.warm_start, **self.solver_options)
     solve_end = time.time()
     if prob.status != cp.OPTIMAL:
       rprint(f"ERROR :: LP did not converge to optimal solution; returning previous solution")
@@ -136,7 +142,7 @@ class SiaLPRelaxed(SiaILP):
     # rprint(f"Allocated GPUs: {alloced_gpus}")
     cluster_free_gpus = {cluster: cluster_max_gpus for cluster, cluster_max_gpus in zip(self.cluster_ordering, self.max_ngpus)}
     partial_allocs = {}
-    partial_allocs_obj = 0
+    partial_allocs_obj_val = 0
     for i, jobname in enumerate(job_ordering):
       job_alloc = allocs[i, :]
       # no allocation for this job
@@ -155,7 +161,7 @@ class SiaLPRelaxed(SiaILP):
           self.allocations[jobname] = alloc_config
         else:
           # partial alloc with >1 configs selected (fractionally)
-          partial_allocs_obj += np.dot(job_alloc, cost_matrix[i, :])
+          partial_allocs_obj_val += np.dot(job_alloc, cost_matrix[i, :])
           valid_idxs = np.where(job_alloc > 0)[0]
           config_weights = job_alloc[job_alloc > 0]
           config_choices = [self.configs[idx] for idx in valid_idxs]
@@ -172,7 +178,8 @@ class SiaLPRelaxed(SiaILP):
     
     stat = {"time": self.current_time, "num_jobs": num_jobs, "num_vars": num_jobs*num_configs, 
             "setup_time_ms": (setup_end - setup_start)*1000, "solve_time_ms": (solve_end - solve_start)*1000, 
-            "solver_status": str(prob.status), "objective_val": prob.value}
+            "solver_status": str(prob.status), "objective_val": prob.value, "num_partial_allocs": len(partial_allocs),
+            "partial_allocs_obj_val": partial_allocs_obj_val}
     self.solver_stats.append(stat)
     
     '''

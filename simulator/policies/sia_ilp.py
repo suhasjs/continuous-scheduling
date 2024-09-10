@@ -28,6 +28,8 @@ class SiaILP(AbstractPolicy):
     self.solver_name = solver_options.get('solver', 'GLPK_MI')
     self.solver_maps = {'GLPK_MI': cp.GLPK_MI, 'ECOS_BB': cp.ECOS_BB, 'CBC_MI': cp.CBC}
     self.solver_options.pop('solver', None)
+    self.warm_start = solver_options.get('warm_start', False)
+    self.solver_options.pop('warm_start', None)
 
     # cluster state
     self.active_jobs = {}
@@ -60,6 +62,21 @@ class SiaILP(AbstractPolicy):
       assert old_cluster_name == new_cluster_name, f"Cluster ordering mismatch: {old_cluster_name} != {new_cluster_name}"
     for old_cluster_ngpus, new_cluster_ngpus in zip(state["max_ngpus"], self.max_ngpus):
       assert old_cluster_ngpus == new_cluster_ngpus, f"Cluster GPU count mismatch: {old_cluster_ngpus} != {new_cluster_ngpus}"
+
+  def get_warm_start_guess(self, job_ordering):
+    num_jobs, num_configs = len(job_ordering), len(self.configs)
+    warm_start_allocs = np.zeros((num_jobs, num_configs))
+    for i, jobname in enumerate(job_ordering):
+      # get current allocation
+      cur_alloc = self.allocations.get(jobname, None)
+      # zero allocation if current allocation is None
+      if cur_alloc is None:
+        continue
+      else:
+        # TODO:: complete this function
+        config_idx = self.configs_to_idx[cur_alloc]
+        warm_start_allocs[i, config_idx] = 1
+    return warm_start_allocs
 
   # Configurations are tuples of (num_nodes, num_gpus, cluster)
   # Each configuration is a candidate allocation in a given heterogeneous GPU cluster
@@ -99,6 +116,7 @@ class SiaILP(AbstractPolicy):
       cluster_nconfigs = len(config_ngpus[cluster])
       config_cnstr_matrix[i, start_idx : start_idx + cluster_nconfigs] = np.asarray(config_ngpus[cluster])
       start_idx += cluster_nconfigs
+    self.configs_to_idx = configs_to_idx
     return configs, (config_cnstr_matrix, max_ngpus)
   
   def get_configurations(self):
@@ -182,7 +200,11 @@ class SiaILP(AbstractPolicy):
     solve_start = time.time()
     cp_solver = self.solver_maps[self.solver_name]
     # print(f"Problem: {prob}")
-    prob.solve(solver=cp_solver, verbose=False, **self.solver_options)
+    if self.warm_start:
+      rprint(f"[yellow]Warm starting ILP solver with previous timestep solution...[/yellow]")
+      warm_start_allocs = self.get_warm_start_guess(job_ordering)
+      allocX.value = warm_start_allocs
+    prob.solve(solver=cp_solver, verbose=False, warm_start=self.warm_start, **self.solver_options)
     solve_end = time.time()
     if prob.status != cp.OPTIMAL:
       rprint(f"ERROR :: ILP did not converge to optimal solution; returning previous solution")
