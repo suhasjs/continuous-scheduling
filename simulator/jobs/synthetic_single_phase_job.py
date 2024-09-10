@@ -32,6 +32,7 @@ class SyntheticSinglePhaseJobClass:
       "a100-pcie": "A100-40GB-PCIe",
       "a10-pcie": "A10-24GB-PCIe",
       "rtx": "RTX-2080Ti-11GB",
+      "quad": "RTX-2080Ti-11GB",
       "aws": "T4-16GB"
     }
 

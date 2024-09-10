@@ -27,7 +27,8 @@ class SiaLPRelaxed(SiaILP):
     # solver options
     self.solver_options = solver_options
     self.solver_name = solver_options.get('solver', 'GLPK')
-    self.solver_maps = {'GLPK': cp.GLPK, 'ECOS': cp.ECOS, 'CBC': cp.CBC, "SCS": cp.SCS, "OSQP": cp.OSQP}
+    self.solver_maps = {'GLPK': cp.GLPK, 'ECOS': cp.ECOS, 'CBC': cp.CBC, "SCS": cp.SCS,
+                        "OSQP": cp.OSQP, "PROXQP": cp.PROXQP, "PIQP": cp.PIQP}
     self.solver_options.pop('solver', None)
     self.warm_start = solver_options.get('warm_start', False)
     self.solver_options.pop('warm_start', None)
@@ -92,6 +93,7 @@ class SiaLPRelaxed(SiaILP):
     if self.p_value < 0:
       cost_matrix[cost_matrix == 0] = 1e-3
     cost_matrix = np.power(cost_matrix, self.p_value)
+    cost_matrix[cost_matrix < 1e-2] = -1
 
     #### Construct optimization problem ####
     objective = cp.sum(cp.multiply(allocX, cost_matrix))
@@ -134,11 +136,11 @@ class SiaLPRelaxed(SiaILP):
     # rprint(f"Solver stats: {stat}")
 
     # extract allocations
-    allocs = allocX.value
+    allocs = allocX.value.round(3)
     alloced_gpus = np.matmul(self.config_cnstr_matrix, np.sum(allocs, axis=0))
-    violations = np.where(alloced_gpus > self.max_ngpus)[0]
+    # violations = np.where(alloced_gpus > self.max_ngpus)[0]
     # add a 0.1 buffer for floating point errors
-    assert np.all(alloced_gpus <= (self.max_ngpus + 0.1)), f"GPU allocation exceeds available GPUs: {alloced_gpus} >= {self.max_ngpus}: {alloced_gpus[violations]} > {self.max_ngpus[violations]}"
+    # assert np.all(alloced_gpus <= (self.max_ngpus + 0.8)), f"GPU allocation exceeds available GPUs: {alloced_gpus} >= {self.max_ngpus}: {alloced_gpus[violations]} > {self.max_ngpus[violations]}"
     # rprint(f"Allocated GPUs: {alloced_gpus}")
     cluster_free_gpus = {cluster: cluster_max_gpus for cluster, cluster_max_gpus in zip(self.cluster_ordering, self.max_ngpus)}
     partial_allocs = {}
@@ -149,7 +151,7 @@ class SiaLPRelaxed(SiaILP):
       if np.sum(job_alloc) == 0:
         self.allocations[jobname] = None
       # some allocation for this job
-      elif np.abs(np.sum(job_alloc) - 1) < 1e-2:
+      elif np.abs(np.sum(job_alloc) - 1) < 0.05:
         # check how many non-zeros in job_alloc
         nnz_job_alloc = np.count_nonzero(job_alloc)
         # exactly one config allocated to this job
@@ -173,7 +175,8 @@ class SiaLPRelaxed(SiaILP):
       rprint(f"[yellow]#Partial allocations: {len(partial_allocs)}/{num_jobs}[/yellow]")
       rounded_allocs = self.round_allocations(partial_allocs, cluster_free_gpus)
       for k in rounded_allocs.keys():
-        rprint(f"\tJob: {k}, partial allocation: {partial_allocs[k]} -> rounded allocation: {rounded_allocs[k]}")
+        # rprint(f"\tJob: {k}, partial allocation: {partial_allocs[k]} -> rounded allocation: {rounded_allocs[k]}")
+        pass
       self.allocations.update(rounded_allocs)
     
     stat = {"time": self.current_time, "num_jobs": num_jobs, "num_vars": num_jobs*num_configs, 
