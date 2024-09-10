@@ -13,6 +13,21 @@ class EventRecorder:
     self.current_time = 0
     self.job_completions = []
 
+  def get_save_state(self):
+    state = {}
+    state["active_jobs"] = [job.name for job in self.active_jobs.values()]
+    state["current_time"] = self.current_time
+    state["job_completions"] = self.job_completions
+    state["jobs"] = [job.get_save_state() for job in self.jobs]
+    return state
+
+  def load_saved_state(self, state):
+    for job, job_state in zip(self.jobs, state["jobs"]):
+      job.load_saved_state(job_state)
+    self.current_time = state["current_time"]
+    self.active_jobs = {job.name:job for job in self.jobs if job.name in state["active_jobs"]}
+    self.job_completions = state["job_completions"]
+
   # accumulate events for `seconds` time and return the events
   def step(self, seconds):
     t_start = time.time()

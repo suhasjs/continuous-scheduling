@@ -22,6 +22,33 @@ class AbstractJob:
     self.progress_fns = None
     self.events = []
   
+  def get_save_state(self):
+    state = {
+      "name": self.name,
+      "status": self.status,
+      "allocation": self.allocation,
+      "time": self.time,
+      "submission_time": self.submission_time,
+      "completion_time": self.completion_time,
+      "reallocation_penalty": self.reallocation_penalty,
+      "progress": self.progress,
+      "max_progress": self.max_progress,
+      "events": self.events
+    }
+    return state
+  
+  def load_saved_state(self, state):
+    self.name = state["name"]
+    self.status = state["status"]
+    self.allocation = state["allocation"]
+    self.time = state["time"]
+    self.submission_time = state["submission_time"]
+    self.completion_time = state["completion_time"]
+    self.reallocation_penalty = state["reallocation_penalty"]
+    self.progress = state["progress"]
+    self.max_progress = state["max_progress"]
+    self.events = state["events"]
+
   def __repr__(self):
     return f"Job(name={self.name}, status={self.status}, progress={self.progress}/{self.max_progress}, alloc={self.allocation}, runtime={self.time}"
 

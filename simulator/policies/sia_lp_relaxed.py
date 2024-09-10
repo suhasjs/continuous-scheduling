@@ -42,6 +42,13 @@ class SiaLPRelaxed(SiaILP):
     # rounding functions to convert fractional allocations to integer allocations
     self.round_allocations = self.round_allocations_largest
 
+  def get_save_state(self):
+    state = super().get_save_state()
+    return state
+  
+  def load_saved_state(self, state, jobs):
+    super().load_saved_state(state, jobs)
+
   def round_allocations_largest(self, partial_allocations, cluster_free_gpus):
     # allocate the largest possible config to each job
     rounded_allocs = {}
@@ -67,7 +74,7 @@ class SiaLPRelaxed(SiaILP):
     if num_jobs == 0:
       stat = {"time": self.current_time, "num_jobs": 0, "num_vars": 0, "setup_time_ms": 0, "solve_time_ms": 0,
               "solver_status": "optimal", "objective_val": 0}
-      self.stats.append(stat)
+      self.solver_stats.append(stat)
       return
     num_configs = len(self.configs)
     allocX = cp.Variable((num_jobs, num_configs))

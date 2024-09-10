@@ -37,6 +37,29 @@ class SiaILP(AbstractPolicy):
 
     # stats
     self.solver_stats = []
+  
+  def get_save_state(self):
+    state = {
+      "current_time": self.current_time,
+      "active_jobs": [job.name for job in self.active_jobs.values()],
+      "allocations": self.allocations,
+      "job_utilities": self.job_utilities,
+      "solver_stats": self.solver_stats,
+      "cluster_ordering": self.cluster_ordering,
+      "max_ngpus": self.max_ngpus
+    }
+    return state
+  
+  def load_saved_state(self, state, jobs):
+    self.current_time = state["current_time"]
+    self.active_jobs = {job.name:job for job in jobs if job.name in state["active_jobs"]}
+    self.allocations = state["allocations"]
+    self.job_utilities = state["job_utilities"]
+    self.solver_stats = state["solver_stats"]
+    for old_cluster_name, new_cluster_name in zip(state["cluster_ordering"], self.cluster_ordering):
+      assert old_cluster_name == new_cluster_name, f"Cluster ordering mismatch: {old_cluster_name} != {new_cluster_name}"
+    for old_cluster_ngpus, new_cluster_ngpus in zip(state["max_ngpus"], self.max_ngpus):
+      assert old_cluster_ngpus == new_cluster_ngpus, f"Cluster GPU count mismatch: {old_cluster_ngpus} != {new_cluster_ngpus}"
 
   # Configurations are tuples of (num_nodes, num_gpus, cluster)
   # Each configuration is a candidate allocation in a given heterogeneous GPU cluster
@@ -106,7 +129,6 @@ class SiaILP(AbstractPolicy):
         self.allocations.pop(jobname)
         self.job_utilities.pop(jobname)
 
-
   def step(self, seconds):
     self.current_time += seconds
 
@@ -118,7 +140,7 @@ class SiaILP(AbstractPolicy):
     if num_jobs == 0:
       stat = {"time": self.current_time, "num_jobs": 0, "num_vars": 0, "setup_time_ms": 0, "solve_time_ms": 0,
               "solver_status": "optimal", "objective_val": 0}
-      self.stats.append(stat)
+      self.solver_stats.append(stat)
       return
     
     num_configs = len(self.configs)

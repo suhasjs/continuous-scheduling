@@ -28,6 +28,8 @@ argparser.add_argument('--simulator-timeout', type=float, default=-1, help='How 
 argparser.add_argument('--debug', action='store_true', help='Whether to pause after every simulator step')
 argparser.add_argument('--output-log', type=str, help='Filename to log solver stats to', default=None)
 argparser.add_argument('--disable-status', action='store_true', help='Whether to stop displaying status updates per step')
+argparser.add_argument('--checkpoint-frequency', type=int, help='How frequently (in #rounds) to checkpoint the simulator state to the output-log file', default=10)
+argparser.add_argument('--load-checkpoint', action='store_true', help='Whether to load checkpoint from output-log file [default=False]')
 argparser.add_argument('--simulate-scheduler-delay', action='store_true', help='Whether to include scheduler latency in simulation: if True, the simulator will incorporate scheduler latency to next round duration [default: False]')
 
 # parse args
@@ -100,9 +102,21 @@ elif policy == 'sia-lp-relaxed':
 else:
   raise ValueError(f"Policy {policy} not supported")
 
+# load checkpoint if needed
+if args.load_checkpoint and args.output_log is not None:
+  logfile_name = args.output_log
+  with open(logfile_name, 'rb') as f:
+    dump_dict = pickle.load(f)
+    event_recorder.load_saved_state(dump_dict["event_recorder_state"])
+    policy.load_saved_state(dump_dict["policy_state"], jobs)
+    round_num = dump_dict["round_num"]
+    assert round_duration == dump_dict["round_duration"], f"Round duration mismatch: {round_duration} != {dump_dict['round_duration']}"
+    rprint(f"Loaded checkpoint from round {round_num}")
+
 # simulate till all jobs complete
 all_jobs_complete = False
 time_stats = []
+round_num = 0
 while event_recorder.current_time < simulator_timeout and not all_jobs_complete:
   print_str = ['-']*80
   print_str = "".join(print_str)
@@ -141,7 +155,9 @@ while event_recorder.current_time < simulator_timeout and not all_jobs_complete:
     job.reallocate(new_alloc)
 
   # print status
-  if not disable_status:
+  if disable_status:
+    rprint(f"[cyan]SIMULATOR TIME:{event_recorder.current_time}")
+  else:
     table = Table(title=f"SIMULATOR TIME:{event_recorder.current_time}")
     table.add_column("Jobname", justify="left", style="cyan", no_wrap=True)
     table.add_column("Category", justify="left", style="cyan", no_wrap=True)
@@ -183,7 +199,7 @@ while event_recorder.current_time < simulator_timeout and not all_jobs_complete:
   avg_jct = np.mean(list(jcts_dict.values())) if len(jcts_dict) > 0 else 0
   rprint(f"Avg JCT: {avg_jct:.2f}, Active jobs: {len(active_jobs)}, Completed jobs: {len(completed_jobs)}")
   # rprint(f"JCTs: {jcts_dict}")
-  
+
   if debug:
     key = input("Press any key to continue... [c to disable debug, x to exit]")
     if key == 'c':
@@ -191,8 +207,24 @@ while event_recorder.current_time < simulator_timeout and not all_jobs_complete:
     elif key == 'x':
       break
 
+  # checkpoint simulator state to disk
+  round_num += 1
+  if round_num % args.checkpoint_frequency == 0 and args.output_log is not None:
+    logfile_name = args.output_log
+    event_recorder_state = event_recorder.get_save_state()
+    policy_state = policy.get_save_state()
+    with open(logfile_name, 'wb') as f:
+      dump_dict = {"solver_stats": policy.solver_stats, "jcts": event_recorder.job_completions}
+      dump_dict["event_recorder_state"] = event_recorder_state
+      dump_dict["policy_state"] = policy_state
+      dump_dict["round_num"] = round_num
+      dump_dict["round_duration"] = round_duration
+      pickle.dump(dump_dict, f)
+    rprint(f"[green]Checkpointed simulator state to {logfile_name} at round {round_num}[/green]")
+rprint(f"Simulation completed at time: {event_recorder.current_time}")
 if args.output_log is not None:
   logfile_name = args.output_log
   with open(logfile_name, 'wb') as f:
     dump_dict = {"solver_stats": policy.solver_stats, "jcts": event_recorder.job_completions}
     pickle.dump(dump_dict, f)
+  rprint(f"[green]Saving simulation stats to {logfile_name} at round {round_num}[/green]")

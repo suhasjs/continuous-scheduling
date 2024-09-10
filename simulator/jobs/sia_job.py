@@ -124,6 +124,25 @@ class SiaJob(AbstractJob):
     self.run_time = 0
     self.max_scale = 0.6
   
+  def get_save_state(self):
+    state = super().get_save_state()
+    state["realloc_countdown"] = self.realloc_countdown
+    state["realloc_time"] = self.realloc_time
+    state["num_restarts"] = self.num_restarts
+    state["run_time"] = self.run_time
+    state["max_scale"] = self.max_scale
+    state["job_class"] = self.job_class.model_name
+    return state
+  
+  def load_saved_state(self, state):
+    assert self.job_class.model_name == state["job_class"], f"JobClass mismatch: {self.job_class.model_name} != {state['job_class']}"
+    super().load_saved_state(state)
+    self.realloc_countdown = state["realloc_countdown"]
+    self.realloc_time = state["realloc_time"]
+    self.num_restarts = state["num_restarts"]
+    self.run_time = state["run_time"]
+    self.max_scale = state["max_scale"]
+
   def evaluate_allocations(self, candidate_allocations):
     utilities = self.job_class.evaluate_allocations(self.progress, candidate_allocations)
     # set utility = 0 for all allocs > max_scale * 2 GPUs

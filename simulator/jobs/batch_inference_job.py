@@ -4,6 +4,7 @@ from rich import print as rprint
 
 class BatchInferenceJobClass:
   def __init__(self, model_name):
+    self.model_name = model_name
     if model_name == "imagenet_resnet50":
       self.profiles = imagenet_resnet50
     elif model_name == "llama_8b_wikipedia":
@@ -68,6 +69,15 @@ class BatchInferenceJob(AbstractJob):
     self.max_progress = jobclass.max_progress
     self.events.append((self.time, self.progress, self.status, None))
   
+  def get_save_state(self):
+    state = super().get_save_state()
+    state["jobclass"] = self.jobclass.model_name
+    return state
+  
+  def load_saved_state(self, state):
+    assert self.jobclass.model_name == state["jobclass"], f"JobClass mismatch: {self.jobclass.model_name} != {state['jobclass']}"
+    super().load_saved_state(state)
+
   def evaluate_allocations(self, candidate_allocations):
     utilities = self.jobclass.evaluate_allocations(candidate_allocations)
     # rprint(f"Job: {self.name}, utilities: {list(zip(candidate_allocations, utilities))}")
@@ -76,7 +86,7 @@ class BatchInferenceJob(AbstractJob):
   def reallocate(self, new_allocation):
     if self.allocation == new_allocation:
       return
-    rprint(f"Job: {self.name}, change of allocation: {self.allocation} -> {new_allocation}")
+    # rprint(f"Job: {self.name}, change of allocation: {self.allocation} -> {new_allocation}")
     if self.allocation is not None and new_allocation is not None:
       self.events.append((self.time, self.progress, JobStatus.REALLOCATING, (self.allocation, new_allocation)))
       self.allocation = new_allocation

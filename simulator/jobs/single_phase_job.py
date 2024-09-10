@@ -9,6 +9,13 @@ class SinglePhaseJob(AbstractJob):
     self.progress_fns = progress_fns
     self.max_progress = max_progress
     self.events.append((self.time, self.progress, self.status, None))
+
+  def get_save_state(self):
+    state = super().get_save_state()
+    return state
+  
+  def load_saved_state(self, state):
+    super().load_saved_state(state)
   
   def evaluate_allocations(self, candidate_allocations):
     candidate_utilities = []
