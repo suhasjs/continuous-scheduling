@@ -51,7 +51,7 @@ debug = args.debug
 disable_status = args.disable_status
 
 # cluster configuration
-cluster_nnodes = {"azure": 5, "aws": 8, "dgx-ext": 4, "quad": 6, "rtx": 6, "a10-pcie": 8, "a100-pcie": 4}
+cluster_nnodes = {"azure": 6, "aws": 8, "dgx-ext": 4, "quad": 8, "rtx": 6, "a10-pcie": 8, "a100-pcie": 8}
 cluster_ngpus_per_node = {"aws": 4, "azure" : 8, "dgx-ext": 8, "quad" : 4, "rtx": 8, "a10-pcie": 4, "a100-pcie": 4}
 # cluster_nnodes = {"aws": 6, "dgx-ext": 2, "rtx": 3}
 for cluster in cluster_nnodes.keys():

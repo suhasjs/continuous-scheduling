@@ -27,7 +27,7 @@ def get_solver_params(solver_name, time_limit=None, rtol=None, mipgap=None):
   elif solver_name == "OSQP":
     options = {'eps_rel': rtol}
   elif solver_name == "SCS":
-    options = {'eps': rtol, 'use_indirect': False}
+    options = {'eps_rel': rtol, 'use_indirect': False}
   elif solver_name == "PROXQP":
     options = {'eps_rel': rtol, 'backend': 'sparse'}
   elif solver_name == "PIQP":
