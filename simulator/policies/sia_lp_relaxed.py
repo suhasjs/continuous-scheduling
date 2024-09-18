@@ -27,8 +27,10 @@ class SiaLPRelaxed(SiaILP):
     # solver options
     self.solver_options = solver_options
     self.solver_name = solver_options.get('solver', 'GLPK')
+    if 'SCIPY' in self.solver_name:
+      self.solver_name = 'SCIPY'
     self.solver_maps = {'GLPK': cp.GLPK, 'ECOS': cp.ECOS, 'CBC': cp.CBC, "SCS": cp.SCS,
-                        "OSQP": cp.OSQP, "PROXQP": cp.PROXQP, "CVXOPT": cp.CVXOPT}
+                        'SCIPY': cp.SCIPY, "OSQP": cp.OSQP, "PROXQP": cp.PROXQP, "CVXOPT": cp.CVXOPT}
     self.solver_options.pop('solver', None)
     self.warm_start = solver_options.get('warm_start', False)
     self.solver_options.pop('warm_start', None)

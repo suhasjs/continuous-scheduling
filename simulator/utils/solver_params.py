@@ -24,6 +24,12 @@ def get_solver_params(solver_name, time_limit=None, rtol=None, mipgap=None):
                'allowablePercentageGap': rtol*1e2}
   elif solver_name == "ECOS_BB":
     options = {'reltol': rtol}
+  elif solver_name == "SCIPY_MI":
+    options = {'scipy_options': {'method': 'highs', 'disp': True, 'tol': rtol}}
+  elif solver_name == "SCIPY_DS":
+    options = {'scipy_options': {'method': 'highs-ds', 'disp': True, 'tol': rtol}}
+  elif solver_name == "SCIPY_IPM":
+    options = {'scipy_options': {'method': 'highs-ipm', 'disp': True, 'tol': rtol}}
   elif solver_name == "OSQP":
     # Known good parameters for OSQP: https://github.com/cvxpy/cvxpy/issues/898#issuecomment-589861097
     options = {'eps_rel': rtol, 'max_iter': 100000, 'rho': 1, 'alpha': 1, 

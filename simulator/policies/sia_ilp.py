@@ -26,7 +26,7 @@ class SiaILP(AbstractPolicy):
     # solver options
     self.solver_options = solver_options
     self.solver_name = solver_options.get('solver', 'GLPK_MI')
-    self.solver_maps = {'GLPK_MI': cp.GLPK_MI, 'ECOS_BB': cp.ECOS_BB, 'CBC_MI': cp.CBC}
+    self.solver_maps = {'GLPK_MI': cp.GLPK_MI, 'ECOS_BB': cp.ECOS_BB, 'CBC_MI': cp.CBC, 'SCIPY_MI': cp.SCIPY}
     self.solver_options.pop('solver', None)
     self.warm_start = solver_options.get('warm_start', False)
     self.solver_options.pop('warm_start', None)
@@ -204,7 +204,7 @@ class SiaILP(AbstractPolicy):
       rprint(f"[yellow]Warm starting ILP solver with previous timestep solution...[/yellow]")
       warm_start_allocs = self.get_warm_start_guess(job_ordering)
       allocX.value = warm_start_allocs
-    prob.solve(solver=cp_solver, verbose=False, warm_start=self.warm_start, **self.solver_options)
+    prob.solve(solver=cp_solver, warm_start=self.warm_start, **self.solver_options)
     solve_end = time.time()
     if prob.status != cp.OPTIMAL:
       rprint(f"ERROR :: ILP did not converge to optimal solution; returning previous solution")
