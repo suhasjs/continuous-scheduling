@@ -126,6 +126,9 @@ class SyntheticSinglePhaseJob(AbstractJob):
     ### self.allocation is not None ###
     # get rate of progress
     throughput = self.jobclass.get_throughput(self.allocation)
+    if throughput == 0:
+      self.time += seconds
+      return
     # update progress
     max_added_progress = self.max_progress - self.progress
     added_progress = throughput * seconds
