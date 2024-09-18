@@ -24,6 +24,7 @@ argparser.add_argument('--solver-timeout', type=int, default=1200, help='Timeout
 argparser.add_argument('--policy', type=str, default='sia-ilp', help='Policy to use for simulation: [sia-ilp, sia-lp-relaxed]')
 argparser.add_argument('--solver-rtol', type=float, default=1e-4, help='Relative solution tolerance for solver')
 argparser.add_argument('--solver-name', type=str, default="GLPK_MI", help='Solver to use for policy optimization')
+argparser.add_argument('--verbose-solver', action='store_true', help='Whether to print verbose solver info')
 argparser.add_argument('--warm-start-solver', action='store_true', help='Whether to warm start the solver with previous timestep solution')
 argparser.add_argument('--simulator-timeout', type=float, default=-1, help='How many seconds of simulation to run (-1 for infinite)')
 argparser.add_argument('--debug', action='store_true', help='Whether to pause after every simulator step')
@@ -42,6 +43,7 @@ cluster_scale = args.cluster_scale
 solver_name = args.solver_name
 solver_timeout = args.solver_timeout
 warm_start_solver = args.warm_start_solver
+verbose_solver = args.verbose_solver
 simulator_timeout = args.simulator_timeout
 policy = args.policy
 if simulator_timeout < 0:
@@ -94,7 +96,7 @@ event_recorder = EventRecorder(jobs, cluster_nnodes, cluster_ngpus_per_node)
 
 # initialize policy
 sia_policy_options = {'lambda_no_alloc': 1.1, 'p_value': 0.5}
-sia_solver_options = {'solver': solver_name, 'warm_start': warm_start_solver}
+sia_solver_options = {'solver': solver_name, 'warm_start': warm_start_solver, 'verbose': verbose_solver}
 sia_solver_options.update(get_solver_params(solver_name, solver_timeout, solver_rtol))
 rprint(f"Policy solver options: {sia_solver_options}")
 if policy == 'sia-ilp':

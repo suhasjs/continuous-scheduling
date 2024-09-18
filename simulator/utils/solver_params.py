@@ -25,11 +25,15 @@ def get_solver_params(solver_name, time_limit=None, rtol=None, mipgap=None):
   elif solver_name == "ECOS_BB":
     options = {'reltol': rtol}
   elif solver_name == "OSQP":
-    options = {'eps_rel': rtol}
+    # Known good parameters for OSQP: https://github.com/cvxpy/cvxpy/issues/898#issuecomment-589861097
+    options = {'eps_rel': rtol, 'max_iter': 100000, 'rho': 1, 'alpha': 1, 
+               'adaptive_rho': False, 'linsys_solver': 'mkl pardiso'}
   elif solver_name == "SCS":
     options = {'eps_rel': rtol, 'use_indirect': False}
+  elif solver_name == "CVXOPT":
+    options = {'reltol': rtol, 'kktsolver': 'ldl2', 'feastol': 1e-3}
   elif solver_name == "PROXQP":
-    options = {'eps_rel': rtol, 'backend': 'sparse'}
+    options = {'eps_rel': rtol, 'backend': 'sparse', 'rho': 1e-5, 'mu_in': 1e-1}
   elif solver_name == "PIQP":
     options = {'eps_rel': rtol}
   else:

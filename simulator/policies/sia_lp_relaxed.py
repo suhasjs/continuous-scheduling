@@ -28,7 +28,7 @@ class SiaLPRelaxed(SiaILP):
     self.solver_options = solver_options
     self.solver_name = solver_options.get('solver', 'GLPK')
     self.solver_maps = {'GLPK': cp.GLPK, 'ECOS': cp.ECOS, 'CBC': cp.CBC, "SCS": cp.SCS,
-                        "OSQP": cp.OSQP, "PROXQP": cp.PROXQP}#, "PIQP": cp.PIQP}
+                        "OSQP": cp.OSQP, "PROXQP": cp.PROXQP, "CVXOPT": cp.CVXOPT}
     self.solver_options.pop('solver', None)
     self.warm_start = solver_options.get('warm_start', False)
     self.solver_options.pop('warm_start', None)
@@ -123,7 +123,7 @@ class SiaLPRelaxed(SiaILP):
       rprint(f"[yellow]Warm starting ILP solver with previous timestep solution...[/yellow]")
       warm_start_allocs = super().get_warm_start_guess(job_ordering)
       allocX.value = warm_start_allocs
-    prob.solve(solver=cp_solver, verbose=True, warm_start=self.warm_start, **self.solver_options)
+    prob.solve(solver=cp_solver, warm_start=self.warm_start, **self.solver_options)
     solve_end = time.time()
     if prob.status != cp.OPTIMAL:
       rprint(f"ERROR :: LP did not converge to optimal solution; returning previous solution")
