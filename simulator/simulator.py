@@ -97,7 +97,7 @@ event_recorder = EventRecorder(jobs, cluster_nnodes, cluster_ngpus_per_node)
 # initialize policy
 sia_policy_options = {'lambda_no_alloc': 1.1, 'p_value': 0.5}
 sia_solver_options = {'solver': solver_name, 'warm_start': warm_start_solver, 'verbose': verbose_solver}
-sia_solver_options.update(get_solver_params(solver_name, solver_timeout, solver_rtol))
+sia_solver_options.update(get_solver_params(solver_name=solver_name, time_limit=solver_timeout, rtol=solver_rtol, verbose=verbose_solver))
 rprint(f"Policy solver options: {sia_solver_options}")
 if policy == 'sia-ilp':
   policy = SiaILP(cluster_nnodes, cluster_ngpus_per_node, sia_policy_options, sia_solver_options)

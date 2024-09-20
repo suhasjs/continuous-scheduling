@@ -103,14 +103,18 @@ class BatchInferenceJob(AbstractJob):
   def step(self, seconds):
     if self.allocation is None:
       self.time += seconds
+      self.queue_time += seconds
       self.progress += 0
       return
     ### self.allocation is not None ###
     # get rate of progress
     throughput = self.jobclass.get_throughput(self.allocation)
     if throughput == 0:
+      rprint(f"[yellow] Job {self.name} has 0 throughput on {self.allocation}; simulating 0 progress[/yellow]")
       self.time += seconds
+      self.queue_time += seconds
       return
+    
     # update progress
     max_added_progress = self.max_progress - self.progress
     added_progress = throughput * seconds

@@ -201,6 +201,7 @@ class SiaJob(AbstractJob):
 
   def step(self, seconds):
     if self.allocation is None:
+      self.queue_time += seconds
       self.time += seconds
       self.progress += 0
       return
@@ -224,6 +225,12 @@ class SiaJob(AbstractJob):
     while seconds_left > 0:
       # get rate of progress
       progress_rate, valid_for = self.job_class.get_progress_rate(self.progress, self.allocation)
+      if progress_rate == 0:
+        rprint(f"[yellow] Job {self.name} has 0 progress rate on {self.allocation}; simulating 0 progress[/yellow]")
+        self.time += seconds_left
+        self.queue_time += seconds_left
+        self.progress += 0
+        break
       # rprint(f"\t{self.name}, rate: {progress_rate:.2f}, valid_for: {valid_for:.2f}, progress={self.progress:.2f}/{self.max_progress:.2f}")
       run_for = min(seconds_left, valid_for)
 

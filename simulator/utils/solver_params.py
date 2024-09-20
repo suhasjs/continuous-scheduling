@@ -3,7 +3,7 @@ import cvxpy as cp
 # time_limit: time limit for solver (in seconds, default=1200s/20min)
 # rtol: relative tolerance for solver (default: 1e-4)
 # mipgap: sub-optimality of integer solution for MIP solver (default: 1e-3/0.1%)
-def get_solver_params(solver_name, time_limit=None, rtol=None, mipgap=None):
+def get_solver_params(solver_name, time_limit=None, rtol=None, mipgap=None, verbose=False):
   if mipgap is None:
     mipgap = 1e-3
   if rtol is None:
@@ -25,11 +25,11 @@ def get_solver_params(solver_name, time_limit=None, rtol=None, mipgap=None):
   elif solver_name == "ECOS_BB":
     options = {'reltol': rtol}
   elif solver_name == "SCIPY_MI":
-    options = {'scipy_options': {'method': 'highs', 'disp': True, 'tol': rtol}}
+    options = {'scipy_options': {'method': 'highs', 'disp': verbose, 'tol': rtol}}
   elif solver_name == "SCIPY_DS":
-    options = {'scipy_options': {'method': 'highs-ds', 'disp': True, 'tol': rtol}}
+    options = {'scipy_options': {'method': 'highs-ds', 'disp': verbose, 'tol': rtol}}
   elif solver_name == "SCIPY_IPM":
-    options = {'scipy_options': {'method': 'highs-ipm', 'disp': True, 'tol': rtol}}
+    options = {'scipy_options': {'method': 'highs-ipm', 'disp': verbose, 'tol': rtol}}
   elif solver_name == "OSQP":
     # Known good parameters for OSQP: https://github.com/cvxpy/cvxpy/issues/898#issuecomment-589861097
     options = {'eps_rel': rtol, 'max_iter': 100000, 'rho': 1, 'alpha': 1, 

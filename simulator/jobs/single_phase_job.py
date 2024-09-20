@@ -55,6 +55,7 @@ class SinglePhaseJob(AbstractJob):
   def step(self, seconds):
     if self.allocation is None:
       self.time += seconds
+      self.queue_time += seconds
       self.progress += 0
       return
     ### self.allocation is not None ###
@@ -62,6 +63,7 @@ class SinglePhaseJob(AbstractJob):
     num_nodes, num_gpus, gpu_type = self.allocation
     progress_fn = self.progress_fns[gpu_type]
     progress_rate = progress_fn(num_nodes, num_gpus)
+    
     # update progress
     max_added_progress = self.max_progress - self.progress
     added_progress = progress_rate * seconds

@@ -14,6 +14,7 @@ class AbstractJob:
     self.status = JobStatus.INVALID
     self.allocation = None
     self.time = 0
+    self.queue_time = 0
     self.submission_time = submission_time
     self.completion_time = None
     self.reallocation_penalty = 0
@@ -30,6 +31,7 @@ class AbstractJob:
       "time": self.time,
       "submission_time": self.submission_time,
       "completion_time": self.completion_time,
+      "queue_time": self.queue_time,
       "reallocation_penalty": self.reallocation_penalty,
       "progress": self.progress,
       "max_progress": self.max_progress,
@@ -44,6 +46,7 @@ class AbstractJob:
     self.time = state["time"]
     self.submission_time = state["submission_time"]
     self.completion_time = state["completion_time"]
+    self.queue_time = state["queue_time"]
     self.reallocation_penalty = state["reallocation_penalty"]
     self.progress = state["progress"]
     self.max_progress = state["max_progress"]

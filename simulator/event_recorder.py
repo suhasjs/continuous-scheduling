@@ -46,7 +46,7 @@ class EventRecorder:
     for jobname in completed_jobs:
       job_obj = self.active_jobs[jobname]
       entry = {"name": jobname, "submission_time": job_obj.submission_time, 
-               "jct": job_obj.time}
+               "queue_time": job_obj.queue_time, "jct": job_obj.time}
       self.job_completions.append(entry)
       self.active_jobs.pop(jobname)
     

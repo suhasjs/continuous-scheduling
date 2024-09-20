@@ -127,7 +127,9 @@ class SyntheticSinglePhaseJob(AbstractJob):
     # get rate of progress
     throughput = self.jobclass.get_throughput(self.allocation)
     if throughput == 0:
+      rprint(f"[yellow] Job {self.name} has 0 throughput with allocation {self.allocation}; simulating 0 progress")
       self.time += seconds
+      self.queue_time += seconds
       return
     # update progress
     max_added_progress = self.max_progress - self.progress
