@@ -1,5 +1,6 @@
 from .policy import AbstractPolicy
 from .sia_ilp import SiaILP
+from .policy_utils import round_allocations_largest
 import cvxpy as cp
 import numpy as np
 from rich import print as rprint
@@ -45,7 +46,7 @@ class SiaLPRelaxed(SiaILP):
     self.solver_stats = []
 
     # rounding functions to convert fractional allocations to integer allocations
-    self.round_allocations = self.round_allocations_largest
+    self.round_allocations = round_allocations_largest
 
   def get_save_state(self):
     state = super().get_save_state()

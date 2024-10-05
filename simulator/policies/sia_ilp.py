@@ -107,9 +107,9 @@ class SiaILP(AbstractPolicy):
           ngpus = nnodes * self.ngpus_per_node[cluster]
       rprint(f"GPU type: {cluster}, max_ngpus: {max_ngpus}, #configs: {len(config_ngpus[cluster])}")
     # construct constraint matrix
-    num_configs = len(configs)
-    rprint(f"Total #configs: {num_configs}")
-    config_cnstr_matrix = np.zeros(shape=(self.num_gputypes, num_configs))
+    self.num_configs = len(configs)
+    rprint(f"Total #configs: {self.num_configs}")
+    config_cnstr_matrix = np.zeros(shape=(self.num_gputypes, self.num_configs))
     start_idx = 0
     max_ngpus = np.asarray([self.cluster_gpus[cluster] for cluster in self.cluster_ordering])
     for i, cluster in enumerate(self.cluster_ordering):

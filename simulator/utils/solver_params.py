@@ -42,6 +42,8 @@ def get_solver_params(solver_name, time_limit=None, rtol=None, mipgap=None, verb
     options = {'eps_rel': rtol, 'backend': 'sparse', 'rho': 1e-5, 'mu_in': 1e-1}
   elif solver_name == "PIQP":
     options = {'eps_rel': rtol}
+  elif solver_name == "PJADMM":
+    options = {}
   else:
     raise ValueError(f"Solver {solver_name} not supported")
   return options

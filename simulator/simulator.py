@@ -1,5 +1,6 @@
 from policies.sia_ilp import SiaILP
 from policies.sia_lp_relaxed import SiaLPRelaxed
+from policies.sia_lp_relaxed_pjadmm import SiaLPRelaxedPJADMM
 from jobs.job import JobStatus
 from jobs.sia_job import get_sia_job_classes, SiaJob
 from jobs.batch_inference_job import get_batch_inference_job_classes, BatchInferenceJob
@@ -21,7 +22,7 @@ argparser.add_argument('--job-trace', type=str, default=None, help='Path to job 
 argparser.add_argument('--round-duration', type=int, default=60, help='Duration of each round in seconds')
 argparser.add_argument('--cluster-scale', type=int, default=1, help='Scale factor for cluster size')
 argparser.add_argument('--solver-timeout', type=int, default=1200, help='Timeout for solver (in seconds)')
-argparser.add_argument('--policy', type=str, default='sia-ilp', help='Policy to use for simulation: [sia-ilp, sia-lp-relaxed]')
+argparser.add_argument('--policy', type=str, default='sia-ilp', help='Policy to use for simulation: [sia-ilp, sia-lp-relaxed, sia-lp-relaxed-pjadmm]')
 argparser.add_argument('--solver-rtol', type=float, default=1e-4, help='Relative solution tolerance for solver')
 argparser.add_argument('--solver-name', type=str, default="GLPK_MI", help='Solver to use for policy optimization')
 argparser.add_argument('--verbose-solver', action='store_true', help='Whether to print verbose solver info')
@@ -103,6 +104,8 @@ if policy == 'sia-ilp':
   policy = SiaILP(cluster_nnodes, cluster_ngpus_per_node, sia_policy_options, sia_solver_options)
 elif policy == 'sia-lp-relaxed':
   policy = SiaLPRelaxed(cluster_nnodes, cluster_ngpus_per_node, sia_policy_options, sia_solver_options)
+elif policy == 'sia-lp-relaxed-pjadmm':
+  policy = SiaLPRelaxedPJADMM(cluster_nnodes, cluster_ngpus_per_node, sia_policy_options, sia_solver_options)
 else:
   raise ValueError(f"Policy {policy} not supported")
 
