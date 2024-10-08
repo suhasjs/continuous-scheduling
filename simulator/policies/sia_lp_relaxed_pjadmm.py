@@ -8,6 +8,8 @@ import jax
 import jaxopt
 from rich import print as rprint
 import time
+import os
+os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=16'
 
 class SiaLPRelaxedPJADMM(SiaILP):
   def __init__(self, num_nodes, ngpus_per_node, policy_options, solver_options):
@@ -46,7 +48,7 @@ class SiaLPRelaxedPJADMM(SiaILP):
     self.solver_name = solver_options.pop('solver', 'PJADMM')
     assert self.solver_name == "PJADMM", f"Invalid solver: {self.solver_name}"
     self.warm_start = solver_options.pop('warm_start', False)
-    self.solver_block_size = solver_options.pop('block_size', 20)
+    self.solver_block_size = solver_options.pop('block_size', 1)
     self.solver_iters_per_sync = solver_options.pop('iters_per_sync', 20)
     self.solver_max_iters = solver_options.pop('max_iters', 1000)
     self.solver_prox_mu = solver_options.pop('prox_mu', 1e-3)
@@ -265,7 +267,7 @@ class SiaLPRelaxedPJADMM(SiaILP):
       return subproblem_solver.run(init_params=init_params, bounds=primal_bounds,
                                    c_is=c_is, rki=rki, xki=xki, yki=yki, 
                                    aug_viol_beta=aug_beta, aug_prox_mu=aug_mu)
-    jax_vmap_fun = jax.pmap(vmap_run, in_axes=(jaxopt.OptStep(0, 0), 0, 0, 0, 0, None, None))
+    jax_vmap_fun = jax.pmap(vmap_run, in_axes=(jaxopt.OptStep(0, 0), 0, 0, 0, 0, None, None), backend=self.solver_backend)
     vmapped_subproblem_state = None
     def init_subproblem_solver():
       rprint(f"Initializing LBFGS state by running one iteration")
@@ -278,7 +280,7 @@ class SiaLPRelaxedPJADMM(SiaILP):
       init_xks = jax.vmap(lambda x: x.reshape(-1), in_axes=(0), out_axes=(0))(job_primals_k)
       rprint(f"Initializing LBFGS state with zero history")
       init_vmapped_optstep = jaxopt.OptStep(init_xks, subproblem_solver_optstep.state)
-      vmap_run_broadcast_state = jax.pmap(vmap_run, in_axes=(jaxopt.OptStep(0, None), 0, 0, 0, 0, None, None))
+      vmap_run_broadcast_state = jax.vmap(vmap_run, in_axes=(jaxopt.OptStep(0, None), 0, 0, 0, 0, None, None))
       return vmap_run_broadcast_state(init_vmapped_optstep, vmapped_cmat, r_ks, job_primals_k, 
                                       y_ks, self.solver_viol_beta, self.solver_prox_mu)
     vmapped_subproblem_state = init_subproblem_solver()
@@ -310,7 +312,7 @@ class SiaLPRelaxedPJADMM(SiaILP):
     def solver_loop_body_fun(k, state, perturb=0):
       x_ks, u_k, s_k, f_ks, v_ks, vmapped_subproblem_state, stats = state
       x_ks = x_ks + perturb
-      f_k = f_ks + perturb
+      f_ks = f_ks + perturb
       s_k = s_k + perturb
       # compute rki, tk, yki, zki and set parameter vals for x,s problems
       # sum over jobs for each config in a block
