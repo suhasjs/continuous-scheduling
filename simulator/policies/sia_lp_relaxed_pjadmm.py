@@ -47,11 +47,11 @@ class SiaLPRelaxedPJADMM(SiaILP):
     assert self.solver_name == "PJADMM", f"Invalid solver: {self.solver_name}"
     self.warm_start = solver_options.pop('warm_start', False)
     self.solver_block_size = solver_options.pop('block_size', 20)
-    self.solver_iters_per_sync = solver_options.pop('iters_per_sync', 25)
+    self.solver_iters_per_sync = solver_options.pop('iters_per_sync', 20)
     self.solver_max_iters = solver_options.pop('max_iters', 1000)
-    self.solver_prox_mu = solver_options.pop('prox_mu', 5e-4)
-    self.solver_viol_beta = solver_options.pop('viol_beta', 1e-3)
-    self.solver_dual_tau = solver_options.pop('dual_tau', 1.0)
+    self.solver_prox_mu = solver_options.pop('prox_mu', 1e-3)
+    self.solver_viol_beta = solver_options.pop('viol_beta', 1e-2)
+    self.solver_dual_tau = solver_options.pop('dual_tau', 1)
     self.solver_tol = solver_options.pop('tol', 1e-4)
     self.solver_backend = solver_options.pop('backend', 'cpu')
     self.solver_normalize_cnstrs = solver_options.pop('normalize_cnstrs', True)
@@ -311,8 +311,7 @@ class SiaLPRelaxedPJADMM(SiaILP):
       x_ks, u_k, s_k, f_ks, v_ks, vmapped_subproblem_state, stats = state
       x_ks = x_ks + perturb
       f_k = f_ks + perturb
-      u_k = 0
-      v_k = 0
+      s_k = s_k + perturb
       # compute rki, tk, yki, zki and set parameter vals for x,s problems
       # sum over jobs for each config in a block
       # shape: (num_blocks, nconfigs)
@@ -374,7 +373,7 @@ class SiaLPRelaxedPJADMM(SiaILP):
       # swap state_k=(x_k, u_k, s_k, f_k, v_k) with (x_kp1, u_kp1, s_kp1, f_kp1, v_kp1)
       # under-relaxation (works better than nestrov)
       alpha_k = 1
-      gamma_k = 1.2
+      gamma_k = 0.6
       u_kp1 = u_k - gamma_k*alpha_k*(u_k - u_kp1)
       s_kp1 = s_k - gamma_k*alpha_k*(s_k - s_kp1)
       x_kp1s = (x_ks - gamma_k*alpha_k*(x_ks - x_kp1s)).round(2)
@@ -400,16 +399,16 @@ class SiaLPRelaxedPJADMM(SiaILP):
     memory_analysis = jitted_loop_body_fun.memory_analysis()
     rprint(f"Memory analysis: {memory_analysis}")
     rprint(f"Running prox-jacobi-admm loop...")
-    rprint(f"Running prox-jacobi-admm loop...")
     final_loop_state = init_loop_state
     iter_times_ms, previous_iter_vals = [], None
     previous_iter_vals, track_stats = None, None
     solve_start_t = time.time()
-    perturb_freq = 100
-    max_perturb_factor = 0.05
+    perturb_freq = 200
+    max_perturb = 0.01
+    has_solver_converged = False
     for i in range(self.solver_max_iters):
       if (i+1) % perturb_freq == 0:
-        perturb = np.random.uniform(-max_perturb_factor, max_perturb_factor)
+        perturb = np.random.uniform(0, max_perturb)
         rprint(f"Slow convergence: Perturbing by {perturb}")
       else:
         perturb = 0.0
@@ -436,6 +435,7 @@ class SiaLPRelaxedPJADMM(SiaILP):
           track_stats = jax.tree_map(lambda x, y: jnp.append(x, y), track_stats, stats_k)
           if (gpu_cnstr_viol_norms[-1] < self.solver_tol and sumto1_cnstr_viol_norms[-1] < self.solver_tol):
             rprint(f"Breaking after {i+1} iterations : gpu_cntr_viol_norm = {gpu_cnstr_viol_norms[-1]}, sumto1_cnstr_viol_norms = {sumto1_cnstr_viol_norms[-1]} < tol={self.solver_tol}")
+            has_solver_converged = True
             break
           else:
             previous_iter_vals = (job_primals_k, gpu_duals_k, gpu_slacks_k, job_slacks_k, job_duals_k)
@@ -473,8 +473,8 @@ class SiaLPRelaxedPJADMM(SiaILP):
     # persist allocs
     stat = {"time": self.current_time, "num_jobs": self.num_jobs, "num_vars": self.num_jobs*self.num_configs, 
             "setup_time_ms": setup_time_ms, "solve_time_ms": solve_time_ms, 
-            "solver_status": "UNKNOWN", "objective_val": track_stats["obj_vals"][-1]}
-    return stat
+            "solver_status": str(has_solver_converged), "objective_val": track_stats["obj_vals"][-1]}
+    return stat, has_solver_converged
 
   def get_save_state(self):
     state = super().get_save_state()
@@ -486,9 +486,12 @@ class SiaLPRelaxedPJADMM(SiaILP):
   # override optimize_allocations to use LP relaxation of ILP + rounding
   def optimize_allocations(self):
     # solve problem
-    solver_stat = self.solve()
+    solver_stat, has_solver_converged = self.solve()
+    if not has_solver_converged:
+      self.solver_stats.append(solver_stat)
+      return
 
-    # extract allocations
+    # extract allocations only if solver has converged
     cluster_free_gpus = {cluster: cluster_max_gpus for cluster, cluster_max_gpus in zip(self.cluster_ordering, self.max_ngpus)}
     partial_allocs = {}
     partial_allocs_obj_val = 0
