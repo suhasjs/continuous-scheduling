@@ -48,19 +48,19 @@ class SiaLPRelaxedPJADMM(SiaILP):
     self.solver_name = solver_options.pop('solver', 'PJADMM')
     assert self.solver_name == "PJADMM", f"Invalid solver: {self.solver_name}"
     self.warm_start = solver_options.pop('warm_start', False)
-    self.solver_block_size = solver_options.pop('block_size', 1)
-    self.solver_iters_per_sync = solver_options.pop('iters_per_sync', 20)
-    self.solver_max_iters = solver_options.pop('max_iters', 1000)
-    self.solver_prox_mu = solver_options.pop('prox_mu', 1e-3)
-    self.solver_viol_beta = solver_options.pop('viol_beta', 1e-2)
-    self.solver_dual_tau = solver_options.pop('dual_tau', 1)
-    self.solver_tol = solver_options.pop('tol', 1e-4)
+    self.solver_block_size = solver_options.pop('block_size', 5)
+    self.solver_iters_per_sync = solver_options.pop('iters_per_sync', 10)
+    self.solver_max_iters = solver_options.pop('max_iters', 5000)
+    self.solver_prox_mu = solver_options.pop('prox_mu', 50)
+    self.solver_viol_beta = solver_options.pop('viol_beta', 0.2)
+    self.solver_dual_tau = solver_options.pop('dual_tau', 0.25)
+    self.solver_tol = solver_options.pop('tol', 1e-5)
     self.solver_backend = solver_options.pop('backend', 'cpu')
     self.solver_normalize_cnstrs = solver_options.pop('normalize_cnstrs', True)
     self.solver_normalize_obj = solver_options.pop('normalize_obj', True)
-    self.require_binary_solutions = solver_options.pop('require_binary_solutions', False)
-    self.lbfgs_max_iters = 15
-    self.lbfgs_history_size = 10
+    self.require_binary_solutions = solver_options.pop('require_binary_solutions', True)
+    self.lbfgs_max_iters = 8
+    self.lbfgs_history_size = 6
 
 
     # saved solver state between two timesteps
@@ -121,8 +121,8 @@ class SiaLPRelaxedPJADMM(SiaILP):
       if jobname not in self.job_primals:
         # zero allocation for this job
         # non-zero duals/slacks for this job
-        job_slacks_k = job_slacks_k.at[block_id, job_idx_in_block].set(0.5)
-        job_duals_k = job_duals_k.at[block_id, job_idx_in_block].set(0.5)
+        job_slacks_k = job_slacks_k.at[block_id, job_idx_in_block].set(0.01)
+        job_duals_k = job_duals_k.at[block_id, job_idx_in_block].set(0.01)
         rprint(f"[yellow]Job {jobname} not found in saved state[/yellow]")
         continue
       else:
@@ -179,6 +179,9 @@ class SiaLPRelaxedPJADMM(SiaILP):
       obj_scale_factor = jnp.max(jnp.abs(vmapped_cmat))
       rprint(f"Scaling down c by {obj_scale_factor}")
       vmapped_cmat = vmapped_cmat / obj_scale_factor
+    else:
+      obj_scale_factor = 1.0
+    rprint(f"Norm of Amat: {jnp.linalg.norm(Amat)}, Norm of bvec: {jnp.linalg.norm(bvec)}")
 
     #### Initialize solver state
     # _k denotes variables at iter k, _kp1 denotes variables at iter (k+1)
@@ -233,8 +236,8 @@ class SiaLPRelaxedPJADMM(SiaILP):
       # add <c_i, x_i> term --> cost (negative of utility)
       ret = jaxopt.tree_util.tree_vdot(c_is, reshaped_xikp1)
       # add -lambda_no_alloc * sum_i (x_i) term --> incentivize allocation (penalize no allocation)
-      # scalar_add_val = jax.tree_map(lambda x: jnp.sum(x), reshaped_xikp1)
-      # ret = jaxopt.tree_util.tree_add_scalar_mul(ret, -1 * self.lambda_no_alloc / obj_scale_factor, scalar_add_val)
+      scalar_add_val = jax.tree_map(lambda x: jnp.sum(x), reshaped_xikp1)
+      ret = jaxopt.tree_util.tree_add_scalar_mul(ret, -1 * self.lambda_no_alloc, scalar_add_val)
       # add beta/2 * || A * sum_i (x_i) + s - b - u ||_2^2 term --> GPU constraint violation
       gpu_cnstr_viol = jaxopt.tree_util.tree_l2_norm(jax.tree_map(lambda x, rki: Amat @ jnp.sum(x, axis=0) + rki, reshaped_xikp1, rki), squared=True)
       ret = jaxopt.tree_util.tree_add_scalar_mul(ret, (aug_viol_beta / 2), gpu_cnstr_viol)
@@ -248,12 +251,12 @@ class SiaLPRelaxedPJADMM(SiaILP):
       if self.require_binary_solutions:
         rhs = jaxopt.tree_util.tree_add_scalar_mul(1, -1, reshaped_xikp1)
         binarization = jaxopt.tree_util.tree_vdot(reshaped_xikp1, rhs)
-        ret = jaxopt.tree_util.tree_add_scalar_mul(ret, 1e-3, binarization)
+        ret = jaxopt.tree_util.tree_add_scalar_mul(ret, 1e-1, binarization)
       return ret
 
     #### Initialize state for LBFGS-B solver
     subproblem_solver = jaxopt.LBFGSB(fun=auglag_fun, jit=True, unroll=True, implicit_diff=False,
-                                      maxiter=self.lbfgs_max_iters, tol=1e-4, stepsize=0.8, 
+                                      maxiter=self.lbfgs_max_iters, tol=1e-4, stepsize=0.9, 
                                       history_size=self.lbfgs_history_size, use_gamma=True)
     # TODO :: re-use lbfgs state from previous problem if size hasn't changed
     subproblem_solver_state = subproblem_solver.init_state(init_params=job_primals_k[0, :].reshape(-1), 
@@ -267,7 +270,12 @@ class SiaLPRelaxedPJADMM(SiaILP):
       return subproblem_solver.run(init_params=init_params, bounds=primal_bounds,
                                    c_is=c_is, rki=rki, xki=xki, yki=yki, 
                                    aug_viol_beta=aug_beta, aug_prox_mu=aug_mu)
-    jax_vmap_fun = jax.pmap(vmap_run, in_axes=(jaxopt.OptStep(0, 0), 0, 0, 0, 0, None, None), backend=self.solver_backend)
+    def hardware_mapper_fun(fun, in_axes, backend):
+      if backend=="cpu":
+        return jax.pmap(fun, in_axes=in_axes, backend='cpu')
+      else:
+        return jax.vmap(fun, in_axes=in_axes)
+    jax_vmap_fun = hardware_mapper_fun(vmap_run, in_axes=(jaxopt.OptStep(0, 0), 0, 0, 0, 0, None, None), backend=self.solver_backend)
     vmapped_subproblem_state = None
     def init_subproblem_solver():
       rprint(f"Initializing LBFGS state by running one iteration")
@@ -358,7 +366,7 @@ class SiaLPRelaxedPJADMM(SiaILP):
       v_kp1s = v_ks - self.solver_dual_tau * (sum_xkp1s_tilde + f_kp1s - 1)
 
       # compute stats for iteration
-      obj_val = jnp.sum(jnp.multiply(vmapped_cmat, x_kp1)) * obj_scale_factor
+      obj_val = jnp.sum(jnp.multiply(vmapped_cmat, x_kp1s)) * obj_scale_factor
       gpu_cnstr_viol = jnp.sum(jnp.clip((Amat @ vmapped_sum_xkp1 + s_kp1 - bvec) * cnstr_scale_factor, 0, None))
       sumto1_cnstr_viol = (sum_xkp1s_tilde + f_kp1s - 1)
       binarized = jnp.sum(x_kp1 * (1 - x_kp1))
@@ -374,8 +382,8 @@ class SiaLPRelaxedPJADMM(SiaILP):
 
       # swap state_k=(x_k, u_k, s_k, f_k, v_k) with (x_kp1, u_kp1, s_kp1, f_kp1, v_kp1)
       # under-relaxation (works better than nestrov)
-      alpha_k = 1
-      gamma_k = 0.6
+      alpha_k = 1.4
+      gamma_k = 1
       u_kp1 = u_k - gamma_k*alpha_k*(u_k - u_kp1)
       s_kp1 = s_k - gamma_k*alpha_k*(s_k - s_kp1)
       x_kp1s = (x_ks - gamma_k*alpha_k*(x_ks - x_kp1s)).round(2)
@@ -405,11 +413,12 @@ class SiaLPRelaxedPJADMM(SiaILP):
     iter_times_ms, previous_iter_vals = [], None
     previous_iter_vals, track_stats = None, None
     solve_start_t = time.time()
-    perturb_freq = 200
-    max_perturb = 0.01
+    perturb_freq = 100000
+    max_perturb = 0.001
     has_solver_converged = False
     for i in range(self.solver_max_iters):
       if (i+1) % perturb_freq == 0:
+        # perturb = np.random.uniform(0, max_perturb)
         perturb = np.random.uniform(0, max_perturb)
         rprint(f"Slow convergence: Perturbing by {perturb}")
       else:
@@ -525,6 +534,7 @@ class SiaLPRelaxedPJADMM(SiaILP):
         self.allocations[jobname] = None
     if len(partial_allocs) > 0:
       rprint(f"[yellow]#Partial allocations: {len(partial_allocs)}/{self.num_jobs}[/yellow]")
+      rprint(f"\tPartial allocations objective value: {partial_allocs_obj_val}")
       rounded_allocs = self.round_allocations(partial_allocs, cluster_free_gpus)
       for k in rounded_allocs.keys():
         # rprint(f"\tJob: {k}, partial allocation: {partial_allocs[k]} -> rounded allocation: {rounded_allocs[k]}")
