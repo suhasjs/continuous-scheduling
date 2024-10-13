@@ -1,6 +1,6 @@
 import jaxopt.tree_util
 from .sia_ilp import SiaILP
-from .policy_utils import round_allocations_largest, initialize_subproblem_solver
+from .policy_utils import round_allocations_largest, initialize_subproblem_solver, pjadmm_iter_fun
 import cvxpy as cp
 import numpy as np
 import jax.numpy as jnp
@@ -10,9 +10,9 @@ from rich import print as rprint
 import time
 import os
 os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=16'
-os.environ["JAX_COMPILATION_CACHE_DIR"] = "/tmp/jax_cache"
-os.environ["JAX_DEBUG_LOG_MODULES"] = "jax._src.compiler,jax._src.lru_cache"
-jax.config.update("jax_explain_cache_misses", True)
+# os.environ["JAX_COMPILATION_CACHE_DIR"] = "/tmp/jax_cache"
+# os.environ["JAX_DEBUG_LOG_MODULES"] = "jax._src.compiler,jax._src.lru_cache"
+# jax.config.update("jax_explain_cache_misses", True)
 
 class SiaLPRelaxedPJADMM(SiaILP):
   def __init__(self, num_nodes, ngpus_per_node, policy_options, solver_options):
@@ -51,19 +51,22 @@ class SiaLPRelaxedPJADMM(SiaILP):
     self.solver_name = solver_options.pop('solver', 'PJADMM')
     assert self.solver_name == "PJADMM", f"Invalid solver: {self.solver_name}"
     self.warm_start = solver_options.pop('warm_start', False)
-    self.solver_block_size = solver_options.pop('block_size', 5)
+    self.solver_block_size = solver_options.pop('block_size', 2)
     self.solver_iters_per_sync = solver_options.pop('iters_per_sync', 10)
     self.solver_max_iters = solver_options.pop('max_iters', 5000)
-    self.solver_prox_mu = solver_options.pop('prox_mu', 50)
-    self.solver_viol_beta = solver_options.pop('viol_beta', 0.2)
-    self.solver_dual_tau = solver_options.pop('dual_tau', 0.25)
+    self.solver_prox_mu = solver_options.pop('prox_mu', 10)
+    self.solver_viol_beta = solver_options.pop('viol_beta', 0.1)
+    self.solver_dual_tau = solver_options.pop('dual_tau', 0.2)
     self.solver_tol = solver_options.pop('tol', 1e-5)
     self.solver_backend = solver_options.pop('backend', 'cpu')
     self.solver_normalize_cnstrs = solver_options.pop('normalize_cnstrs', True)
     self.solver_normalize_obj = solver_options.pop('normalize_obj', True)
-    self.require_binary_solutions = solver_options.pop('require_binary_solutions', True)
+    self.require_binary_solutions = solver_options.pop('require_binary_solutions', False)
     self.lbfgs_max_iters = 8
     self.lbfgs_history_size = 6
+    self.print_compilation_stats = False
+    # key: (num_blocks, block_size, num_configs)
+    self.cached_solver_loop_fns = {}
 
 
     # saved solver state between two timesteps
@@ -198,22 +201,24 @@ class SiaLPRelaxedPJADMM(SiaILP):
       "job_primals_k": job_primals_k, "job_primal_bounds": primal_bounds,
       "job_slacks_k": job_slacks_k, "job_duals_k": job_duals_k,
       "gpu_duals_k": gpu_duals_k, "gpu_slacks_k": gpu_slacks_k,
-      "gpu_vec_k": gpu_vec_k, "sum_vec_k": sum_vec_k
+      "gpu_vec_k": gpu_vec_k, "sum_vec_k": sum_vec_k, "vmapped_cmat": vmapped_cmat,
     }
     auglag_other_params = {
-      "num_configs": self.num_configs, "lambda_no_alloc": self.lambda_no_alloc,
-      "Amat": Amat, "require_binary_solutions": self.require_binary_solutions
+      "block_size": self.solver_block_size, "num_configs": self.num_configs, 
+      "lambda_no_alloc": self.lambda_no_alloc, "Amat": Amat, 
+      "require_binary_solutions": self.require_binary_solutions
     }
     lbfgs_solver_args = {
       "max_iters" : self.lbfgs_max_iters,
       "history_size" : self.lbfgs_history_size,
       "viol_beta" : self.solver_viol_beta,
-      "prox_mu" : self.solver_prox_mu
+      "prox_mu" : self.solver_prox_mu,
+      "solver_backend": self.solver_backend
     }
 
-    subproblem_vmap_run, vmapped_subproblem_state = initialize_subproblem_solver(lbfgs_solver_args,
-                                                                                 subproblem_solver_init_params,
-                                                                                 auglag_other_params)
+    subproblem_solver, vmapped_subproblem_state = initialize_subproblem_solver(lbfgs_solver_args, 
+                                                                               subproblem_solver_init_params,
+                                                                               auglag_other_params)
 
     #### Start solver loop
     stats_k = {
@@ -222,131 +227,56 @@ class SiaLPRelaxedPJADMM(SiaILP):
       "binarization": jnp.zeros(self.solver_iters_per_sync),
       "obj_vals": jnp.zeros(self.solver_iters_per_sync),
     }
+
     init_loop_state = (job_primals_k, gpu_duals_k, gpu_slacks_k, job_slacks_k, 
                        job_duals_k, vmapped_subproblem_state, stats_k)
-
-    # One iteration of Proximal Jacobi ADMM solver applied to Sia policy (LP or ILP)
-    # Args: (k, state) -> state
-    # Captures: [vmapped_cmat, Amat, bvec, cnstr_scale_factor, obj_scale_factor, self.num_configs, 
-    #            self.solver_viol_beta, self.solver_prox_mu, self.solver_dual_tau]
-    # state: (x_ks, u_k, s_k, f_ks, v_ks, vmapped_subproblem_state, stats)
-    # x_ks: (num_blocks, block_size, nconfigs) --> job_primals_k
-    # u_k: (num_blocks, num_gputypes) --> gpu_duals_k
-    # s_k: (num_blocks, block_size) --> job_slacks_k
-    # f_ks: (num_blocks, block_size) --> job_slacks_k
-    # v_ks: (num_blocks, block_size) --> job_duals_k
-    # vmapped_subproblem_state: OptStep --> subproblem_solver_optstep
-    # stats: {gpu_cnstr_viol_norms, sumto1_cnstr_viol_norms, binarization, obj_vals}
-    def solver_loop_body_fun(k, state, perturb=0):
-      x_ks, u_k, s_k, f_ks, v_ks, vmapped_subproblem_state, stats = state
-      x_ks = x_ks + perturb
-      f_ks = f_ks + perturb
-      s_k = s_k + perturb
-      # compute rki, tk, yki, zki and set parameter vals for x,s problems
-      # sum over jobs for each config in a block
-      # shape: (num_blocks, nconfigs)
-      block_sum_xk_0 = jnp.sum(x_ks, axis=1)
-      # sum over configs for each job in a block
-      # shape: (num_blocks, block_size)
-      block_sum_xk_1 = jnp.sum(x_ks, axis=2)
-      # compute vmapped
-      z_ks = block_sum_xk_1 - 1 - v_ks
-      y_ks = f_ks - 1 - v_ks
-      vmapped_tk = (Amat @ jnp.sum(block_sum_xk_0, axis=0)) - bvec - u_k
-      r_ks = vmapped_tk - jax.vmap(lambda x: Amat @ x)(block_sum_xk_0) + s_k
-      
-      # compute x^{k+1}, f^{k+1}
-      # create inputs for vmapped solve
-      init_xks = jax.vmap(lambda x: x.reshape(-1), in_axes=(0), out_axes=(0))(x_ks)
-      vmapped_subproblem_state = jaxopt.OptStep(init_xks, vmapped_subproblem_state.state)
-      vmapped_subproblem_state = jax_vmap_fun(vmapped_subproblem_state, vmapped_cmat, r_ks, x_ks, y_ks, 
-                                              self.solver_viol_beta, self.solver_prox_mu)
-      vmapped_xkp1_res = vmapped_subproblem_state.params
-      x_kp1s = jax.vmap(lambda x: x.reshape(-1, self.num_configs), in_axes=(0), out_axes=(0))(vmapped_xkp1_res)
-      # replace non-vmapped variants with vmapped
-      x_kp1 = x_kp1s.reshape(-1, self.num_configs)
-      # compute s^{k+1}
-      # s_kp1 = (aug_prox_mu * s_k - aug_viol_beta * t_k) / (aug_prox_mu + aug_viol_beta)
-      s_kp1 = -vmapped_tk
-      s_kp1 = jnp.clip(s_kp1, 0, bvec)
-
-      # compute f^{k+1}
-      f_kp1s = -z_ks
-      f_kp1s = jnp.clip(f_kp1s, 0, 1)
-
-      # compute u^{k+1}
-      vmapped_sum_xkp1 = jnp.sum(jnp.sum(x_kp1s, axis=1), axis=0)
-      vmapped_ukp1 = u_k - self.solver_dual_tau * ((Amat @ vmapped_sum_xkp1) + s_kp1 - bvec)
-      u_kp1 = vmapped_ukp1
-
-      # compute v^{k+1}
-      # sum_xkp1_tilde = jnp.sum(x_kp1, axis=1)
-      # v_kp1 = v_k - dual_tau * (sum_xkp1_tilde + f_kp1 - 1)
-      sum_xkp1s_tilde = jnp.sum(x_kp1s, axis=2)
-      v_kp1s = v_ks - self.solver_dual_tau * (sum_xkp1s_tilde + f_kp1s - 1)
-
-      # compute stats for iteration
-      obj_val = jnp.sum(jnp.multiply(vmapped_cmat, x_kp1s)) * obj_scale_factor
-      gpu_cnstr_viol = jnp.sum(jnp.clip((Amat @ vmapped_sum_xkp1 + s_kp1 - bvec) * cnstr_scale_factor, 0, None))
-      sumto1_cnstr_viol = (sum_xkp1s_tilde + f_kp1s - 1)
-      binarized = jnp.sum(x_kp1 * (1 - x_kp1))
-      gpu_cnstr_viol_norm = gpu_cnstr_viol
-      sumto1_cnstr_viol_norm = jnp.linalg.norm(sumto1_cnstr_viol).round(3)
-      iter_stats = {
-        "gpu_cnstr_viol_norms": gpu_cnstr_viol_norm,
-        "sumto1_cnstr_viol_norms": sumto1_cnstr_viol_norm,
-        "obj_vals": obj_val,
-        "binarization": binarized
-      }
-      stats = jax.tree_map(lambda x, y: x.at[k].set(y), stats, iter_stats)
-
-      # swap state_k=(x_k, u_k, s_k, f_k, v_k) with (x_kp1, u_kp1, s_kp1, f_kp1, v_kp1)
-      # under-relaxation (works better than nestrov)
-      alpha_k = 1.4
-      gamma_k = 1
-      u_kp1 = u_k - gamma_k*alpha_k*(u_k - u_kp1)
-      s_kp1 = s_k - gamma_k*alpha_k*(s_k - s_kp1)
-      x_kp1s = (x_ks - gamma_k*alpha_k*(x_ks - x_kp1s)).round(2)
-      f_kp1s = f_ks - gamma_k*alpha_k*(f_ks - f_kp1s)
-      v_kp1s = v_ks - gamma_k*alpha_k*(v_ks - v_kp1s)
-      x_diff = jnp.linalg.norm(x_kp1s - x_ks)
-      # jax.debug.print("Iteration {}: obj_val = {}, gpu_cnstr_viol_norm = {}, sumto1_cnstr_viol_norm={}, x_progress={}", k, obj_val.round(3), gpu_cnstr_viol_norm.round(3), sumto1_cnstr_viol_norm.round(3), x_diff.round(3))
-
-      new_state = (x_kp1s, u_kp1, s_kp1, f_kp1s, v_kp1s, vmapped_subproblem_state, stats)
-      return new_state
+    
+    problem_args = {
+      "Amat": Amat, "bvec": bvec, "vmapped_cmat": vmapped_cmat, "job_primal_bounds": primal_bounds,
+      "cnstr_scale_factor": cnstr_scale_factor, "obj_scale_factor": obj_scale_factor
+    }
+    iter_args = {
+      "solver_viol_beta": self.solver_viol_beta, 
+      "solver_prox_mu": self.solver_prox_mu, "solver_dual_tau": self.solver_dual_tau
+    }
 
     ### Run solver loop
-    rprint(f"Compiling prox-jacobi-admm loop")
-    # TODO :: cache the compiled function for fixed problem sizes
-    jitted_loop_body_fun = jax.jit(solver_loop_body_fun, backend=self.solver_backend).lower(0, init_loop_state, 0.0).compile()
-    cost_analysis = jitted_loop_body_fun.cost_analysis()[0]
-    bytes_accessed = 0
-    for k, v in cost_analysis.items():
-      if 'bytes' in k:
-        bytes_accessed += v
-    flop_to_bytes_ratio = cost_analysis['flops'] / bytes_accessed
-    rprint(f"Cost analysis: flops={cost_analysis['flops'] / 1e6} MFLOPs/iter, flop:bytes_accessed ratio={flop_to_bytes_ratio}")
-    memory_analysis = jitted_loop_body_fun.memory_analysis()
-    rprint(f"Memory analysis: {memory_analysis}")
+    cache_key = (self.num_blocks, self.solver_block_size, self.num_configs)
+    if cache_key in self.cached_solver_loop_fns:
+      rprint(f"CACHE HIT:: Using cached prox-jacobi-admm loop. Problem size: ({self.num_blocks}, {self.solver_block_size}, {self.num_configs})")
+      jitted_iter_func = self.cached_solver_loop_fns[cache_key]
+    else:
+      rprint(f"CACHE MISS:: Compiling prox-jacobi-admm loop. Problem size: ({self.num_blocks}, {self.solver_block_size}, {self.num_configs})")
+      iter_fun = jax.tree_util.Partial(pjadmm_iter_fun, block_size=self.solver_block_size, 
+                                       num_configs=self.num_configs, subproblem_solver=subproblem_solver, 
+                                       solver_backend=self.solver_backend)
+      jitted_iter_func = jax.jit(iter_fun, backend=self.solver_backend)
+      # jitted_iter_func = jitted_iter_func.lower(k=0, state=init_loop_state, problem_args=problem_args, iter_args=iter_args).compile()
+      self.cached_solver_loop_fns[cache_key] = jitted_iter_func
+    # jitted_iter_func = iter_fun
+    if self.print_compilation_stats:
+      compiled_func = jitted_iter_func.lower(0, init_loop_state, problem_args, iter_args).compile()
+      cost_analysis = compiled_func.cost_analysis()[0]
+      bytes_accessed = 0
+      for k, v in cost_analysis.items():
+        if 'bytes' in k:
+          bytes_accessed += v
+      flop_to_bytes_ratio = cost_analysis['flops'] / bytes_accessed
+      rprint(f"Cost analysis: flops={cost_analysis['flops'] / 1e6} MFLOPs/iter, flop:bytes_accessed ratio={flop_to_bytes_ratio}")
+      memory_analysis = compiled_func.memory_analysis()
+      rprint(f"Memory analysis: {memory_analysis}")
+    
     rprint(f"Running prox-jacobi-admm loop...")
     final_loop_state = init_loop_state
     iter_times_ms, previous_iter_vals = [], None
     previous_iter_vals, track_stats = None, None
     solve_start_t = time.time()
-    perturb_freq = 100000
-    max_perturb = 0.001
     has_solver_converged = False
     for i in range(self.solver_max_iters):
-      if (i+1) % perturb_freq == 0:
-        # perturb = np.random.uniform(0, max_perturb)
-        perturb = np.random.uniform(0, max_perturb)
-        rprint(f"Slow convergence: Perturbing by {perturb}")
-      else:
-        perturb = 0.0
       # check for early convergence
       if (i+1) % self.solver_iters_per_sync == 0:
         jax.block_until_ready(final_loop_state)
-        job_primals_k, gpu_duals_k, gpu_slacks_k, job_slacks_k, job_duals_k, subproblem_solver_state, stats_k = final_loop_state
+        job_primals_k, gpu_duals_k, gpu_slacks_k, job_slacks_k, job_duals_k, vmapped_subproblem_state, stats_k = final_loop_state
         if previous_iter_vals is None:
           previous_iter_vals = (job_primals_k, gpu_duals_k, gpu_slacks_k, job_slacks_k, job_duals_k)
           track_stats = jax.tree_map(lambda x: x.copy(), stats_k)
@@ -370,9 +300,10 @@ class SiaLPRelaxedPJADMM(SiaILP):
             break
           else:
             previous_iter_vals = (job_primals_k, gpu_duals_k, gpu_slacks_k, job_slacks_k, job_duals_k)
-        # append stats to previous iters
+      # append stats to previous iters
       start_t = time.time()
-      final_loop_state = jitted_loop_body_fun(i % self.solver_iters_per_sync, final_loop_state, perturb)
+      final_loop_state = jitted_iter_func(k=(i % self.solver_iters_per_sync), state=final_loop_state,
+                                          problem_args=problem_args, iter_args=iter_args)
       end_t = time.time()
       iter_time = end_t - start_t
       iter_times_ms.append(iter_time*1000)
@@ -380,7 +311,7 @@ class SiaLPRelaxedPJADMM(SiaILP):
     solve_end_t = time.time()
 
     ### Post-processing solver output
-    job_primals_k, gpu_duals_k, gpu_slacks_k, job_slacks_k, job_duals_k, subproblem_solver_state, stats_k = final_loop_state
+    job_primals_k, gpu_duals_k, gpu_slacks_k, job_slacks_k, job_duals_k, vmapped_subproblem_state, stats_k = final_loop_state
     num_iters = len(iter_times_ms)
     rprint(f"Prox-Jacobi-ADMM: finished {num_iters} iterations in {(solve_end_t - solve_start_t)*1000:.2f} ms")
     job_primals = np.squeeze(np.array(job_primals_k.reshape(-1, self.num_configs)))

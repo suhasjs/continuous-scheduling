@@ -17,7 +17,7 @@ class BatchInferenceJobClass:
     self.max_progress = self.profiles["num_iters"]
     # TODO :: make this a configurable parameter
     # setting to 16 to not let it take up all GPUs
-    self.max_scale_units = 8
+    self.max_scale_units = 16
     self.speedup = self.profiles["sim_speedup"]
 
   def evaluate_allocations(self, candidate_allocations):

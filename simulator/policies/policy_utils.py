@@ -59,14 +59,10 @@ def round_allocations_largest(partial_allocations, cluster_free_gpus):
     '''
 # Captures: num_configs, lambda_no_alloc, Amat, bvec, require_binary_solutions
 # Augmented Lagrangian for the Sia ILP/LP-relaxation policy
-def sia_auglag_fun(xikp1, c_is, rki, xki, yki, aug_viol_beta, aug_prox_mu, other_params):
-  Amat = other_params["Amat"]
-  num_configs = other_params["num_configs"]
-  lambda_no_alloc = other_params["lambda_no_alloc"]
-  require_binary_solutions = other_params["require_binary_solutions"]
-  
+def sia_auglag_fun(xikp1, c_is, rki, xki, yki, aug_viol_beta, aug_prox_mu, 
+                   Amat, block_size, num_configs, lambda_no_alloc, require_binary_solutions):
   # reshape xikp1 to (-1, nconfigs)
-  reshaped_xikp1 = jax.tree_map(lambda x: x.reshape(-1, num_configs), xikp1)
+  reshaped_xikp1 = jax.tree_map(lambda x: x.reshape(block_size, num_configs), xikp1)
   # add <c_i, x_i> term --> cost (negative of utility)
   ret = jaxopt.tree_util.tree_vdot(c_is, reshaped_xikp1)
   # add -lambda_no_alloc * sum_i (x_i) term --> incentivize allocation (penalize no allocation)
@@ -98,8 +94,9 @@ def initialize_subproblem_solver(lbfgs_solver_params, init_params, auglag_other_
   vmapped_cmat = init_params["vmapped_cmat"]
   lbfgs_max_iters, lbfgs_history_size = lbfgs_solver_params["max_iters"], lbfgs_solver_params["history_size"]
   solver_viol_beta, solver_prox_mu = lbfgs_solver_params["viol_beta"], lbfgs_solver_params["prox_mu"]
+  solver_backend = lbfgs_solver_params["solver_backend"]
 
-  specialized_auglag_fun = jax.tree_util.Partial(sia_auglag_fun, other_params=auglag_other_params)
+  specialized_auglag_fun = jax.jit(jax.tree_util.Partial(sia_auglag_fun, **auglag_other_params), backend=solver_backend)
 
   #### Initialize LBFGS-B solver
   subproblem_solver = jaxopt.LBFGSB(fun=specialized_auglag_fun, jit=True, unroll=True, implicit_diff=False,
@@ -110,25 +107,124 @@ def initialize_subproblem_solver(lbfgs_solver_params, init_params, auglag_other_
                                                           bounds=job_primal_bounds, c_is=vmapped_cmat[0, :, :], 
                                                           rki=gpu_vec_k[0, :], xki=job_primals_k[0, :], 
                                                           yki=sum_vec_k[0, :], aug_viol_beta=solver_viol_beta, 
-                                                          aug_prox_mu=solver_prox_mu, other_params=auglag_other_params)
+                                                          aug_prox_mu=solver_prox_mu)
   subproblem_solver_optstep = jaxopt.OptStep(job_primals_k[0].reshape(-1), subproblem_solver_state)
-
-  def vmap_run(init_params, c_is, rki, xki, yki, aug_beta, aug_mu):
-    return subproblem_solver.run(init_params=init_params, bounds=job_primal_bounds,
-                                  c_is=c_is, rki=rki, xki=xki, yki=yki, 
-                                  aug_viol_beta=aug_beta, aug_prox_mu=aug_mu)
-  def hardware_mapper_fun(fun, in_axes, backend):
-    if backend=="cpu":
-      return jax.pmap(fun, in_axes=in_axes, backend='cpu')
-    else:
-      return jax.vmap(fun, in_axes=in_axes)
-  
-  jax_vmap_fun = hardware_mapper_fun(vmap_run, in_axes=(jaxopt.OptStep(0, 0), 0, 0, 0, 0, None, None),
-                                      backend=solver_backend)
   # create inputs for vmapped solve
   init_xks = jax.vmap(lambda x: x.reshape(-1), in_axes=(0), out_axes=(0))(job_primals_k)
   init_vmapped_optstep = jaxopt.OptStep(init_xks, subproblem_solver_optstep.state)
-  vmap_run_broadcast_state = jax.vmap(vmap_run, in_axes=(jaxopt.OptStep(0, None), 0, 0, 0, 0, None, None))
-  lbfgs_state =  vmap_run_broadcast_state(init_vmapped_optstep, vmapped_cmat, gpu_vec_k, job_primals_k, 
-                                          sum_vec_k, solver_viol_beta, solver_prox_mu)
-  return jax_vmap_fun, lbfgs_state
+  vmap_broadcast_in_axes = (jaxopt.OptStep(0, None), (None, None), 0, 0, 0, 0, None, None)
+  broadcast_args = (init_vmapped_optstep, job_primal_bounds, vmapped_cmat, gpu_vec_k, job_primals_k, 
+                    sum_vec_k, solver_viol_beta, solver_prox_mu)
+  if solver_backend == "cpu":
+    vmapped_lbfgsb_state= jax.pmap(subproblem_solver.run, in_axes=vmap_broadcast_in_axes, backend="cpu")(*broadcast_args)
+  else:
+    vmapped_lbfgsb_state= jax.vmap(subproblem_solver.run, in_axes=vmap_broadcast_in_axes)(*broadcast_args)
+  return subproblem_solver, vmapped_lbfgsb_state
+
+# One iteration of Proximal Jacobi ADMM solver applied to Sia policy (LP or ILP)
+# Args: (k, state) -> state
+# Captures: [vmapped_cmat, Amat, bvec, cnstr_scale_factor, obj_scale_factor, self.num_configs, 
+#            self.solver_viol_beta, self.solver_prox_mu, self.solver_dual_tau]
+# state: (x_ks, u_k, s_k, f_ks, v_ks, vmapped_lbfgsb_state, stats)
+# x_ks: (num_blocks, block_size, nconfigs) --> job_primals_k
+# u_k: (num_blocks, num_gputypes) --> gpu_duals_k
+# s_k: (num_blocks, block_size) --> job_slacks_k
+# f_ks: (num_blocks, block_size) --> job_slacks_k
+# v_ks: (num_blocks, block_size) --> job_duals_k
+# vmapped_lbfgsb_state: OptStep --> subproblem_solver_optstep
+# stats: {gpu_cnstr_viol_norms, sumto1_cnstr_viol_norms, binarization, obj_vals}
+def pjadmm_iter_fun(k, state, problem_args, iter_args, 
+                    block_size, num_configs, subproblem_solver, solver_backend="cpu"):
+  # problem args
+  Amat, bvec = problem_args["Amat"], problem_args["bvec"]
+  vmapped_cmat = problem_args["vmapped_cmat"]
+  job_primal_bounds = problem_args["job_primal_bounds"]
+  cnstr_scale_factor, obj_scale_factor = problem_args["cnstr_scale_factor"], problem_args["obj_scale_factor"]
+
+  # iter args
+  solver_viol_beta, solver_prox_mu = iter_args["solver_viol_beta"], iter_args["solver_prox_mu"]
+  solver_dual_tau = iter_args["solver_dual_tau"]
+
+  x_ks, u_k, s_k, f_ks, v_ks, vmapped_lbfgsb_state, stats = state
+  # compute rki, tk, yki, zki and set parameter vals for x,s problems
+  # sum over jobs for each config in a block
+  # shape: (num_blocks, nconfigs)
+  block_sum_xk_0 = jnp.sum(x_ks, axis=1)
+  # sum over configs for each job in a block
+  # shape: (num_blocks, block_size)
+  block_sum_xk_1 = jnp.sum(x_ks, axis=2)
+  # compute vmapped
+  z_ks = block_sum_xk_1 - 1 - v_ks
+  y_ks = f_ks - 1 - v_ks
+  vmapped_tk = (Amat @ jnp.sum(block_sum_xk_0, axis=0)) - bvec - u_k
+  r_ks = vmapped_tk - jax.vmap(lambda x: Amat @ x)(block_sum_xk_0) + s_k
+  
+  # compute x^{k+1}, f^{k+1}
+  # create inputs for vmapped solve
+  init_xks = jax.vmap(lambda x: x.reshape(-1), in_axes=(0), out_axes=(0))(x_ks)
+  vmapped_lbfgsb_state = jaxopt.OptStep(init_xks, vmapped_lbfgsb_state.state)
+  '''
+  vmapped_args = {
+    "init_params" : vmapped_lbfgsb_state,
+    "c_is" : vmapped_cmat, "rki" : r_ks, "xki" : x_ks, "yki" : y_ks,
+    "aug_viol_beta" : solver_viol_beta, "aug_prox_mu" : solver_prox_mu
+  }
+  '''
+  vmapped_args = (vmapped_lbfgsb_state, job_primal_bounds, vmapped_cmat, r_ks, x_ks, y_ks, solver_viol_beta, solver_prox_mu)
+  vmap_in_axes = (jaxopt.OptStep(0, 0), (None, None), 0, 0, 0, 0, None, None)
+  if solver_backend == "cpu":
+    vmapped_lbfgsb_state = jax.pmap(subproblem_solver.run, in_axes=vmap_in_axes, backend='cpu')(*vmapped_args)
+  else:
+    vmapped_lbfgsb_state = jax.vmap(subproblem_solver.run, in_axes=vmap_in_axes)(*vmapped_args)
+
+  vmapped_xkp1_res = vmapped_lbfgsb_state.params
+  x_kp1s = jax.vmap(lambda x: x.reshape(block_size, num_configs), in_axes=(0), out_axes=(0))(vmapped_xkp1_res)
+  # compute s^{k+1}
+  # s_kp1 = (aug_prox_mu * s_k - aug_viol_beta * t_k) / (aug_prox_mu + aug_viol_beta)
+  s_kp1 = -vmapped_tk
+  s_kp1 = jnp.clip(s_kp1, 0, bvec)
+
+  # compute f^{k+1}
+  f_kp1s = -z_ks
+  f_kp1s = jnp.clip(f_kp1s, 0, 1)
+
+  # compute u^{k+1}
+  vmapped_sum_xkp1 = jnp.sum(jnp.sum(x_kp1s, axis=1), axis=0)
+  vmapped_ukp1 = u_k - solver_dual_tau * ((Amat @ vmapped_sum_xkp1) + s_kp1 - bvec)
+  u_kp1 = vmapped_ukp1
+
+  # compute v^{k+1}
+  # sum_xkp1_tilde = jnp.sum(x_kp1, axis=1)
+  # v_kp1 = v_k - dual_tau * (sum_xkp1_tilde + f_kp1 - 1)
+  sum_xkp1s_tilde = jnp.sum(x_kp1s, axis=2)
+  v_kp1s = v_ks - solver_dual_tau * (sum_xkp1s_tilde + f_kp1s - 1)
+
+  # compute stats for iteration
+  obj_val = jnp.sum(jnp.multiply(vmapped_cmat, x_kp1s))
+  gpu_cnstr_viol = jnp.sum(jnp.clip((Amat @ vmapped_sum_xkp1 + s_kp1 - bvec), 0, None))
+  sumto1_cnstr_viol = (sum_xkp1s_tilde + f_kp1s - 1)
+  binarized = jnp.sum(x_kp1s * (1 - x_kp1s))
+  gpu_cnstr_viol_norm = gpu_cnstr_viol
+  sumto1_cnstr_viol_norm = jnp.linalg.norm(sumto1_cnstr_viol).round(3)
+  iter_stats = {
+    "gpu_cnstr_viol_norms": gpu_cnstr_viol_norm,
+    "sumto1_cnstr_viol_norms": sumto1_cnstr_viol_norm,
+    "obj_vals": obj_val,
+    "binarization": binarized
+  }
+  stats = jax.tree_map(lambda x, y: x.at[k].set(y), stats, iter_stats)
+
+  # swap state_k=(x_k, u_k, s_k, f_k, v_k) with (x_kp1, u_kp1, s_kp1, f_kp1, v_kp1)
+  # under-relaxation (works better than nestrov)
+  alpha_k = 1.4
+  gamma_k = 1
+  u_kp1 = u_k - gamma_k*alpha_k*(u_k - u_kp1)
+  s_kp1 = s_k - gamma_k*alpha_k*(s_k - s_kp1)
+  x_kp1s = (x_ks - gamma_k*alpha_k*(x_ks - x_kp1s)).round(2)
+  f_kp1s = f_ks - gamma_k*alpha_k*(f_ks - f_kp1s)
+  v_kp1s = v_ks - gamma_k*alpha_k*(v_ks - v_kp1s)
+  x_diff = jnp.linalg.norm(x_kp1s - x_ks)
+  # jax.debug.print("Iteration {}: obj_val = {}, gpu_cnstr_viol_norm = {}, sumto1_cnstr_viol_norm={}, x_progress={}", k, obj_val.round(3), gpu_cnstr_viol_norm.round(3), sumto1_cnstr_viol_norm.round(3), x_diff.round(3))
+
+  new_state = (x_kp1s, u_kp1, s_kp1, f_kp1s, v_kp1s, vmapped_lbfgsb_state, stats)
+  return new_state

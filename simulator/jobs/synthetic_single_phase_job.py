@@ -22,6 +22,8 @@ class SyntheticSinglePhaseJobClass:
       raise ValueError(f"Model {model_name} not supported")
     with open(profile_filename, 'rb') as f:
       self.profiles = pickle.load(f)
+
+    self.max_num_gpus = 64
     
     self.max_progress = self.profiles["max_progress"]
     self.goodputs = self.profiles["goodputs"]
@@ -41,6 +43,8 @@ class SyntheticSinglePhaseJobClass:
     for _, ngpus, gpu_type in candidate_allocations:
       if gpu_type not in self.gpu_types_rename.keys() or ngpus not in self.num_gpus_to_idx.keys():
         candidate_utilities.append(0)
+      elif ngpus > self.max_num_gpus:
+          candidate_utilities.append(0)
       else:
         renamed_gpu_type = self.gpu_types_rename[gpu_type]
         ngpus_idx = self.num_gpus_to_idx[ngpus]
