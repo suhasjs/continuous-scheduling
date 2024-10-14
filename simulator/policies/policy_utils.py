@@ -81,7 +81,7 @@ def sia_auglag_fun(xikp1, c_is, rki, xki, yki, aug_viol_beta, aug_prox_mu,
   if require_binary_solutions:
     rhs = jaxopt.tree_util.tree_add_scalar_mul(1, -1, reshaped_xikp1)
     binarization = jaxopt.tree_util.tree_vdot(reshaped_xikp1, rhs)
-    ret = jaxopt.tree_util.tree_add_scalar_mul(ret, 1e-1, binarization)
+    ret = jaxopt.tree_util.tree_add_scalar_mul(ret, 1e-3, binarization)
   return ret
 
 # Initialize an LBFGS-B solver for the primal subproblem in Prox Jacobi ADMM
@@ -145,7 +145,7 @@ def pjadmm_iter_fun(k, state, problem_args, iter_args,
   solver_viol_beta, solver_prox_mu = iter_args["solver_viol_beta"], iter_args["solver_prox_mu"]
   solver_dual_tau = iter_args["solver_dual_tau"]
 
-  x_ks, u_k, s_k, f_ks, v_ks, vmapped_lbfgsb_state, stats = state
+  x_ks, u_k, s_k, f_ks, v_ks, vmapped_lbfgsb_state, other_state, stats = state
   # compute rki, tk, yki, zki and set parameter vals for x,s problems
   # sum over jobs for each config in a block
   # shape: (num_blocks, nconfigs)
@@ -214,17 +214,27 @@ def pjadmm_iter_fun(k, state, problem_args, iter_args,
   }
   stats = jax.tree_map(lambda x, y: x.at[k].set(y), stats, iter_stats)
 
-  # swap state_k=(x_k, u_k, s_k, f_k, v_k) with (x_kp1, u_kp1, s_kp1, f_kp1, v_kp1)
-  # under-relaxation (works better than nestrov)
-  alpha_k = 1.4
-  gamma_k = 1
-  u_kp1 = u_k - gamma_k*alpha_k*(u_k - u_kp1)
-  s_kp1 = s_k - gamma_k*alpha_k*(s_k - s_kp1)
-  x_kp1s = (x_ks - gamma_k*alpha_k*(x_ks - x_kp1s)).round(2)
-  f_kp1s = f_ks - gamma_k*alpha_k*(f_ks - f_kp1s)
-  v_kp1s = v_ks - gamma_k*alpha_k*(v_ks - v_kp1s)
+  # compute residual for fast ADMM update
+  eta, d_k, alpha_k = other_state[0], other_state[1], other_state[2]
+  sum_xk = jnp.sum(jnp.sum(x_kp1s, axis=1), axis=0)
+  sum_xkp1 = vmapped_sum_xkp1
+  d_kp1 = solver_viol_beta * jnp.linalg.norm(Amat @ (sum_xkp1 - sum_xk)) + (1 / solver_viol_beta) * (jnp.linalg.norm(x_kp1s - x_ks))
+  # initialize d_k > (d_kp1 / eta) so that the first update does not cause restart
+  d_k = jnp.where(d_k < 1e-3, d_kp1 / eta + 1, d_k)
+
+  # updates with restart
+  # Could probably use momentum/ADAM or one of the other optimizers here
+  alpha_kp1 = jnp.where(d_kp1 < eta * d_k, (1 + jnp.sqrt(1 + 4 * alpha_k**2)) / 2, alpha_k)
+  alpha_kp1 = jnp.clip(alpha_kp1, 1, 4.0)
+  scale_factor = (alpha_k - 1) / alpha_kp1
+  x_kp1s = jnp.where(d_kp1 < eta * d_k, x_kp1s + scale_factor * (x_kp1s - x_ks), x_kp1s)
+  u_kp1 = jnp.where(d_kp1 < eta * d_k, u_kp1 + scale_factor * (u_kp1 - u_k), u_k)
+  v_kp1s = jnp.where(d_kp1 < eta * d_k, v_kp1s + scale_factor * (v_kp1s - v_ks), v_ks)
+  d_k = jnp.where(d_kp1 < eta * d_k, d_kp1, d_k / eta)
   x_diff = jnp.linalg.norm(x_kp1s - x_ks)
   # jax.debug.print("Iteration {}: obj_val = {}, gpu_cnstr_viol_norm = {}, sumto1_cnstr_viol_norm={}, x_progress={}", k, obj_val.round(3), gpu_cnstr_viol_norm.round(3), sumto1_cnstr_viol_norm.round(3), x_diff.round(3))
+  other_state = other_state.at[1].set(d_k)
+  other_state = other_state.at[2].set(alpha_k)
 
-  new_state = (x_kp1s, u_kp1, s_kp1, f_kp1s, v_kp1s, vmapped_lbfgsb_state, stats)
+  new_state = (x_kp1s, u_kp1, s_kp1, f_kp1s, v_kp1s, vmapped_lbfgsb_state, other_state, stats)
   return new_state

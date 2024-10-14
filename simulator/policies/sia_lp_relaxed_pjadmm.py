@@ -51,8 +51,8 @@ class SiaLPRelaxedPJADMM(SiaILP):
     self.solver_name = solver_options.pop('solver', 'PJADMM')
     assert self.solver_name == "PJADMM", f"Invalid solver: {self.solver_name}"
     self.warm_start = solver_options.pop('warm_start', False)
-    self.solver_block_size = solver_options.pop('block_size', 2)
-    self.solver_iters_per_sync = solver_options.pop('iters_per_sync', 10)
+    self.solver_block_size = solver_options.pop('block_size', 5)
+    self.solver_iters_per_sync = solver_options.pop('iters_per_sync', 20)
     self.solver_max_iters = solver_options.pop('max_iters', 5000)
     self.solver_prox_mu = solver_options.pop('prox_mu', 10)
     self.solver_viol_beta = solver_options.pop('viol_beta', 0.1)
@@ -127,8 +127,9 @@ class SiaLPRelaxedPJADMM(SiaILP):
       if jobname not in self.job_primals:
         # zero allocation for this job
         # non-zero duals/slacks for this job
-        job_slacks_k = job_slacks_k.at[block_id, job_idx_in_block].set(0.01)
-        job_duals_k = job_duals_k.at[block_id, job_idx_in_block].set(0.01)
+        job_slacks_k = job_slacks_k.at[block_id, job_idx_in_block].set(0.0)
+        job_primals_k = job_primals_k.at[block_id, job_idx_in_block, :].set(0.0)
+        job_duals_k = job_duals_k.at[block_id, job_idx_in_block].set(0.0)
         rprint(f"[yellow]Job {jobname} not found in saved state[/yellow]")
         continue
       else:
@@ -227,17 +228,20 @@ class SiaLPRelaxedPJADMM(SiaILP):
       "binarization": jnp.zeros(self.solver_iters_per_sync),
       "obj_vals": jnp.zeros(self.solver_iters_per_sync),
     }
+    # other_state = (eta, d_k, alpha_k)
+    other_state = jnp.array([0.999, 0.0, 1.0])
 
     init_loop_state = (job_primals_k, gpu_duals_k, gpu_slacks_k, job_slacks_k, 
-                       job_duals_k, vmapped_subproblem_state, stats_k)
+                       job_duals_k, vmapped_subproblem_state, other_state, stats_k)
     
     problem_args = {
       "Amat": Amat, "bvec": bvec, "vmapped_cmat": vmapped_cmat, "job_primal_bounds": primal_bounds,
       "cnstr_scale_factor": cnstr_scale_factor, "obj_scale_factor": obj_scale_factor
     }
+    prox_mu = self.solver_viol_beta * (job_primals_k.shape[0]*job_primals_k.shape[1] - 1)
     iter_args = {
       "solver_viol_beta": self.solver_viol_beta, 
-      "solver_prox_mu": self.solver_prox_mu, "solver_dual_tau": self.solver_dual_tau
+      "solver_prox_mu": prox_mu, "solver_dual_tau": self.solver_dual_tau
     }
 
     ### Run solver loop
@@ -276,22 +280,26 @@ class SiaLPRelaxedPJADMM(SiaILP):
       # check for early convergence
       if (i+1) % self.solver_iters_per_sync == 0:
         jax.block_until_ready(final_loop_state)
-        job_primals_k, gpu_duals_k, gpu_slacks_k, job_slacks_k, job_duals_k, vmapped_subproblem_state, stats_k = final_loop_state
+        job_primals_k, gpu_duals_k, gpu_slacks_k, job_slacks_k, job_duals_k, vmapped_subproblem_state, other_state, stats_k = final_loop_state
+        # jax.debug.breakpoint()
         if previous_iter_vals is None:
           previous_iter_vals = (job_primals_k, gpu_duals_k, gpu_slacks_k, job_slacks_k, job_duals_k)
           track_stats = jax.tree_map(lambda x: x.copy(), stats_k)
         else:
           # break if progress < tol
           prev_job_primals_k, prev_gpu_duals_k, prev_gpu_slacks_k, prev_job_slacks_k, prev_job_duals_k = previous_iter_vals
+          binarization = 1 - jnp.multiply(job_primals_k, 1-job_primals_k).sum(axis=1).flatten()
           primal_diff = jnp.linalg.norm(job_primals_k - prev_job_primals_k)
           gpu_dual_diff = jnp.linalg.norm(gpu_duals_k - prev_gpu_duals_k)
           gpu_slack_diff = jnp.linalg.norm(gpu_slacks_k - prev_gpu_slacks_k)
           job_slack_diff = jnp.linalg.norm(job_slacks_k - prev_job_slacks_k)
           job_dual_diff = jnp.linalg.norm(job_duals_k - prev_job_duals_k)
           rprint(f"Iteration {i} [t = {(time.time() - solve_start_t)*1000:.2f} ms] :: primal_change={primal_diff:.3f}, gpu_dual_change={gpu_dual_diff:.3f}, gpu_slack_change={gpu_slack_diff:.3f}, job_slack_change={job_slack_diff:.3f}, job_dual_change={job_dual_diff:.3f}")
-          rprint(f"\t obj={stats_k['obj_vals'][i-1]:.3f}, gpu_cnstr_viol_norm:{stats_k['gpu_cnstr_viol_norms'][i-1]:.3f}, \
-                 job_cnstr_viol_norm:{stats_k['sumto1_cnstr_viol_norms'][i-1]:.3f}, binarization={stats_k['binarization'][i-1]:.3f}")
+          rprint(f"\t obj={stats_k['obj_vals'][i-1]:.3f}, gpu_cnstr_viol_norm:{stats_k['gpu_cnstr_viol_norms'][i-1]:.3f}, job_cnstr_viol_norm:{stats_k['sumto1_cnstr_viol_norms'][i-1]:.3f}, d_k:{other_state[1].round(3)}, alpha_k:{other_state[2].round(3)}")
           gpu_cnstr_viol_norms, sumto1_cnstr_viol_norms = stats_k['gpu_cnstr_viol_norms'], stats_k['sumto1_cnstr_viol_norms']
+          iter_args["solver_prox_mu"] = iter_args["solver_prox_mu"] * 1.03
+          rprint(f"\tBinarization: {binarization}, prox_mu: {iter_args['solver_prox_mu']}")
+
 
           track_stats = jax.tree_map(lambda x, y: jnp.append(x, y), track_stats, stats_k)
           if (gpu_cnstr_viol_norms[-1] < self.solver_tol and sumto1_cnstr_viol_norms[-1] < self.solver_tol):
@@ -311,10 +319,10 @@ class SiaLPRelaxedPJADMM(SiaILP):
     solve_end_t = time.time()
 
     ### Post-processing solver output
-    job_primals_k, gpu_duals_k, gpu_slacks_k, job_slacks_k, job_duals_k, vmapped_subproblem_state, stats_k = final_loop_state
+    job_primals_k, gpu_duals_k, gpu_slacks_k, job_slacks_k, job_duals_k, vmapped_subproblem_state, other_state, stats_k = final_loop_state
     num_iters = len(iter_times_ms)
     rprint(f"Prox-Jacobi-ADMM: finished {num_iters} iterations in {(solve_end_t - solve_start_t)*1000:.2f} ms")
-    job_primals = np.squeeze(np.array(job_primals_k.reshape(-1, self.num_configs)))
+    job_primals = np.squeeze(np.array(job_primals_k.reshape(-1, self.num_configs))).round(2)
     gpu_duals = np.squeeze(np.array(gpu_duals_k))
     gpu_slacks = np.squeeze(np.array(gpu_slacks_k))
     job_slacks = np.squeeze(np.array(job_slacks_k.reshape(-1,)))
