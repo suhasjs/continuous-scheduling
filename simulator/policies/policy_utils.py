@@ -88,6 +88,7 @@ def sia_auglag_fun(xikp1, c_is, rki, xki, yki, aug_viol_beta, aug_prox_mu,
 def initialize_subproblem_solver(lbfgs_solver_params, init_params, auglag_other_params):
   # extract params
   job_primals_k, job_primal_bounds = init_params["job_primals_k"], init_params["job_primal_bounds"]
+  job_primals_k = jax.device_put(job_primals_k, jax.devices(backend='cpu')[0])
   job_duals_k, gpu_duals_k = init_params["job_duals_k"], init_params["gpu_duals_k"]
   job_slacks_k, gpu_slacks_k = init_params["job_slacks_k"], init_params["gpu_slacks_k"]
   gpu_vec_k, sum_vec_k = init_params["gpu_vec_k"], init_params["sum_vec_k"]
