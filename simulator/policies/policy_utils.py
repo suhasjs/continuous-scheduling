@@ -57,10 +57,10 @@ def round_allocations_largest(partial_allocations, cluster_free_gpus):
     (4) u^{k+1} = u^k - tau * (A * x^{k+1} + s^{k+1} - b)         <--- dual update for GPU constraints
     (5) v^{k+1} = v^k - tau * (x^{k+1}^T*1 + f^{k+1} - 1)             <--- dual update for sum-to-1 constraints
     '''
-# Captures: num_configs, lambda_no_alloc, Amat, bvec, require_binary_solutions
+# Captures: num_configs, lambda_no_alloc, Amat, bvec
 # Augmented Lagrangian for the Sia ILP/LP-relaxation policy
-def sia_auglag_fun(xikp1, c_is, rki, xki, yki, aug_viol_beta, aug_prox_mu, 
-                   Amat, block_size, num_configs, lambda_no_alloc, require_binary_solutions):
+def sia_auglag_fun(xikp1, c_is, rki, xki, yki, aug_viol_beta, aug_prox_mu, aug_bin_lambda, 
+                   lambda_no_alloc, Amat, block_size, num_configs):
   # reshape xikp1 to (-1, nconfigs)
   reshaped_xikp1 = jax.tree_map(lambda x: x.reshape(block_size, num_configs), xikp1)
   # add <c_i, x_i> term --> cost (negative of utility)
@@ -73,15 +73,14 @@ def sia_auglag_fun(xikp1, c_is, rki, xki, yki, aug_viol_beta, aug_prox_mu,
   ret = jaxopt.tree_util.tree_add_scalar_mul(ret, (aug_viol_beta / 2), gpu_cnstr_viol)
   # add beta/2 * || sum (x_i) + f - 1 - v ||_2^2 term --> sum-to-1 constraint violation
   sumto_1_cnstr_viol = jaxopt.tree_util.tree_l2_norm(jax.tree_map(lambda x, yki: jnp.sum(x, axis=1) + yki, reshaped_xikp1, yki), squared=True)
-  ret = jaxopt.tree_util.tree_add_scalar_mul(ret, (aug_viol_beta / 2), sumto_1_cnstr_viol)
+  ret = jaxopt.tree_util.tree_add_scalar_mul(ret, (block_size * aug_viol_beta / 2), sumto_1_cnstr_viol)
   # add mu/2 * || x - x^k ||_2^2 term --> proximal term for primals
   prox_term = jaxopt.tree_util.tree_l2_norm(jax.tree_map(lambda x, y: x - y, reshaped_xikp1, xki), squared=True)
   ret = jaxopt.tree_util.tree_add_scalar_mul(ret, (aug_prox_mu / 2), prox_term)
   # binarization = x * (1 - x) --> penalize non-binary solutions if required
-  if require_binary_solutions:
-    rhs = jaxopt.tree_util.tree_add_scalar_mul(1, -1, reshaped_xikp1)
-    binarization = jaxopt.tree_util.tree_vdot(reshaped_xikp1, rhs)
-    ret = jaxopt.tree_util.tree_add_scalar_mul(ret, 1e-3, binarization)
+  rhs = jaxopt.tree_util.tree_add_scalar_mul(1, -1, reshaped_xikp1)
+  binarization = jaxopt.tree_util.tree_vdot(reshaped_xikp1, rhs)
+  ret = jaxopt.tree_util.tree_add_scalar_mul(ret, aug_bin_lambda, binarization)
   return ret
 
 # Initialize an LBFGS-B solver for the primal subproblem in Prox Jacobi ADMM
@@ -95,27 +94,28 @@ def initialize_subproblem_solver(lbfgs_solver_params, init_params, auglag_other_
   vmapped_cmat = init_params["vmapped_cmat"]
   lbfgs_max_iters, lbfgs_history_size = lbfgs_solver_params["max_iters"], lbfgs_solver_params["history_size"]
   solver_viol_beta, solver_prox_mu = lbfgs_solver_params["viol_beta"], lbfgs_solver_params["prox_mu"]
+  solver_bin_lambda = lbfgs_solver_params["bin_lambda"]
   solver_backend = lbfgs_solver_params["solver_backend"]
 
   specialized_auglag_fun = jax.jit(jax.tree_util.Partial(sia_auglag_fun, **auglag_other_params), backend=solver_backend)
 
   #### Initialize LBFGS-B solver
   subproblem_solver = jaxopt.LBFGSB(fun=specialized_auglag_fun, jit=True, unroll=True, implicit_diff=False,
-                                    maxiter=lbfgs_max_iters, tol=1e-4, stepsize=0.9, 
+                                    maxiter=lbfgs_max_iters, tol=1e-3, stepsize=0.9, 
                                     history_size=lbfgs_history_size, use_gamma=True)
   # Initialize subproblem state for one block
   subproblem_solver_state = subproblem_solver.init_state(init_params=job_primals_k[0, :].reshape(-1), 
                                                           bounds=job_primal_bounds, c_is=vmapped_cmat[0, :, :], 
                                                           rki=gpu_vec_k[0, :], xki=job_primals_k[0, :], 
                                                           yki=sum_vec_k[0, :], aug_viol_beta=solver_viol_beta, 
-                                                          aug_prox_mu=solver_prox_mu)
+                                                          aug_prox_mu=solver_prox_mu, aug_bin_lambda=solver_bin_lambda)
   subproblem_solver_optstep = jaxopt.OptStep(job_primals_k[0].reshape(-1), subproblem_solver_state)
   # create inputs for vmapped solve
   init_xks = jax.vmap(lambda x: x.reshape(-1), in_axes=(0), out_axes=(0))(job_primals_k)
   init_vmapped_optstep = jaxopt.OptStep(init_xks, subproblem_solver_optstep.state)
-  vmap_broadcast_in_axes = (jaxopt.OptStep(0, None), (None, None), 0, 0, 0, 0, None, None)
+  vmap_broadcast_in_axes = (jaxopt.OptStep(0, None), (None, None), 0, 0, 0, 0, None, None, None)
   broadcast_args = (init_vmapped_optstep, job_primal_bounds, vmapped_cmat, gpu_vec_k, job_primals_k, 
-                    sum_vec_k, solver_viol_beta, solver_prox_mu)
+                    sum_vec_k, solver_viol_beta, solver_prox_mu, solver_bin_lambda)
   if solver_backend == "cpu":
     vmapped_lbfgsb_state= jax.pmap(subproblem_solver.run, in_axes=vmap_broadcast_in_axes, backend="cpu")(*broadcast_args)
   else:
@@ -144,6 +144,7 @@ def pjadmm_iter_fun(k, state, problem_args, iter_args,
 
   # iter args
   solver_viol_beta, solver_prox_mu = iter_args["solver_viol_beta"], iter_args["solver_prox_mu"]
+  solver_bin_lambda = iter_args["solver_bin_lambda"]
   solver_dual_tau = iter_args["solver_dual_tau"]
 
   x_ks, u_k, s_k, f_ks, v_ks, vmapped_lbfgsb_state, other_state, stats = state
@@ -171,8 +172,9 @@ def pjadmm_iter_fun(k, state, problem_args, iter_args,
     "aug_viol_beta" : solver_viol_beta, "aug_prox_mu" : solver_prox_mu
   }
   '''
-  vmapped_args = (vmapped_lbfgsb_state, job_primal_bounds, vmapped_cmat, r_ks, x_ks, y_ks, solver_viol_beta, solver_prox_mu)
-  vmap_in_axes = (jaxopt.OptStep(0, 0), (None, None), 0, 0, 0, 0, None, None)
+  vmapped_args = (vmapped_lbfgsb_state, job_primal_bounds, vmapped_cmat, r_ks, x_ks, y_ks, 
+                  solver_viol_beta, solver_prox_mu, solver_bin_lambda)
+  vmap_in_axes = (jaxopt.OptStep(0, 0), (None, None), 0, 0, 0, 0, None, None, None)
   if solver_backend == "cpu":
     vmapped_lbfgsb_state = jax.pmap(subproblem_solver.run, in_axes=vmap_in_axes, backend='cpu')(*vmapped_args)
   else:
@@ -225,8 +227,8 @@ def pjadmm_iter_fun(k, state, problem_args, iter_args,
 
   # updates with restart
   # Could probably use momentum/ADAM or one of the other optimizers here
-  alpha_kp1 = jnp.where(d_kp1 < eta * d_k, (1 + jnp.sqrt(1 + 4 * alpha_k**2)) / 2, alpha_k)
-  alpha_kp1 = jnp.clip(alpha_kp1, 1, 4.0)
+  alpha_kp1 = jnp.where(d_kp1 < eta * d_k, (1 + jnp.sqrt(1 + 4 * alpha_k**2)) / 2, alpha_k / 1.1)
+  alpha_kp1 = jnp.clip(alpha_kp1, 0.25, 25.0)
   scale_factor = (alpha_k - 1) / alpha_kp1
   x_kp1s = jnp.where(d_kp1 < eta * d_k, x_kp1s + scale_factor * (x_kp1s - x_ks), x_kp1s)
   u_kp1 = jnp.where(d_kp1 < eta * d_k, u_kp1 + scale_factor * (u_kp1 - u_k), u_k)
@@ -234,8 +236,8 @@ def pjadmm_iter_fun(k, state, problem_args, iter_args,
   d_k = jnp.where(d_kp1 < eta * d_k, d_kp1, d_k / eta)
   x_diff = jnp.linalg.norm(x_kp1s - x_ks)
   # jax.debug.print("Iteration {}: obj_val = {}, gpu_cnstr_viol_norm = {}, sumto1_cnstr_viol_norm={}, x_progress={}", k, obj_val.round(3), gpu_cnstr_viol_norm.round(3), sumto1_cnstr_viol_norm.round(3), x_diff.round(3))
-  other_state = other_state.at[1].set(d_k)
-  other_state = other_state.at[2].set(alpha_k)
+  other_state = other_state.at[1].set(d_kp1)
+  other_state = other_state.at[2].set(alpha_kp1)
 
   new_state = (x_kp1s, u_kp1, s_kp1, f_kp1s, v_kp1s, vmapped_lbfgsb_state, other_state, stats)
   return new_state
