@@ -23,7 +23,7 @@ class SyntheticSinglePhaseJobClass:
     with open(profile_filename, 'rb') as f:
       self.profiles = pickle.load(f)
 
-    self.max_num_gpus = 64
+    self.max_num_gpus = 128
     
     self.max_progress = self.profiles["max_progress"]
     self.goodputs = self.profiles["goodputs"]

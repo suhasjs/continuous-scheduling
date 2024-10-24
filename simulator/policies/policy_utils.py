@@ -227,7 +227,7 @@ def pjadmm_iter_fun(k, state, problem_args, iter_args,
 
   # updates with restart
   # Could probably use momentum/ADAM or one of the other optimizers here
-  alpha_kp1 = jnp.where(d_kp1 < eta * d_k, (1 + jnp.sqrt(1 + 4 * alpha_k**2)) / 2, alpha_k / 1.1)
+  alpha_kp1 = jnp.where(d_kp1 < eta * d_k, (1 + jnp.sqrt(1 + 4 * alpha_k**2)) / 2, alpha_k / 2)
   alpha_kp1 = jnp.clip(alpha_kp1, 0.25, 25.0)
   scale_factor = (alpha_k - 1) / alpha_kp1
   x_kp1s = jnp.where(d_kp1 < eta * d_k, x_kp1s + scale_factor * (x_kp1s - x_ks), x_kp1s)

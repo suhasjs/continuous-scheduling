@@ -51,7 +51,7 @@ class SiaLPRelaxedPJADMM(SiaILP):
     self.solver_name = solver_options.pop('solver', 'PJADMM')
     assert self.solver_name == "PJADMM", f"Invalid solver: {self.solver_name}"
     self.warm_start = solver_options.pop('warm_start', False)
-    self.solver_block_size = solver_options.pop('block_size', 16)
+    self.solver_block_size = solver_options.pop('block_size', 32)
     self.solver_iters_per_sync = solver_options.pop('iters_per_sync', 10)
     self.solver_max_iters = solver_options.pop('max_iters', 5000)
     self.solver_prox_mu = solver_options.pop('prox_mu', 10)
@@ -385,9 +385,9 @@ class SiaLPRelaxedPJADMM(SiaILP):
           rprint(f"\t obj={stats_k['obj_vals'][i-1]:.3f}, gpu_cnstr_viol_norm:{stats_k['gpu_cnstr_viol_norms'][i-1]:.3f}, job_cnstr_viol_norm:{stats_k['sumto1_cnstr_viol_norms'][i-1]:.3f}, d_k:{other_state[1].round(3)}, alpha_k:{other_state[2].round(3)}")
           gpu_cnstr_viol_norms, sumto1_cnstr_viol_norms = stats_k['gpu_cnstr_viol_norms'], stats_k['sumto1_cnstr_viol_norms']
           max_mu = iter_args["solver_viol_beta"] * (self.num_blocks - 1)
-          iter_args["solver_prox_mu"] = jnp.clip(iter_args["solver_prox_mu"] * 1.2, a_min=max_mu, a_max=30)
+          iter_args["solver_prox_mu"] = jnp.clip(iter_args["solver_prox_mu"] * 1.2, a_min=max_mu, a_max=50)
           # iter_args["solver_bin_lambda"] = jnp.clip(iter_args["solver_bin_lambda"] * 1.2, a_min=1e-3, a_max=5)
-          max_beta = 5 * self.num_jobs / 100
+          max_beta = self.num_jobs / 100
           iter_args["solver_viol_beta"] = jnp.clip(iter_args["solver_viol_beta"] * 2, a_min=None, a_max=max_beta)
 
           # iter_args["solver_viol_beta"] = iter_args["solver_viol_beta"] * 1.03
@@ -445,7 +445,9 @@ class SiaLPRelaxedPJADMM(SiaILP):
               "Amat": Amat, "bvec": bvec, "vmapped_cmat": vmapped_cmat, "job_primal_bounds": primal_bounds,
               "cnstr_scale_factor": cnstr_scale_factor, "obj_scale_factor": obj_scale_factor
             }
-            iter_args["solver_prox_mu"] = prox_mu / 2
+            iter_args["solver_prox_mu"] = iter_args["solver_prox_mu"] / 2
+            max_beta = self.num_jobs / 100
+            iter_args["solver_viol_beta"] = jnp.clip(iter_args["solver_viol_beta"] * 2, a_min=None, a_max=max_beta)
             previous_iter_vals = (job_primals_k, gpu_duals_k, gpu_slacks_k, job_slacks_k, job_duals_k)
       # append stats to previous iters
       start_t = time.time()
