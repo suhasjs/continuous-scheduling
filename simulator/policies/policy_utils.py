@@ -183,13 +183,13 @@ def pjadmm_iter_fun(k, state, problem_args, iter_args,
   vmapped_xkp1_res = vmapped_lbfgsb_state.params
   x_kp1s = jax.vmap(lambda x: x.reshape(block_size, num_configs), in_axes=(0), out_axes=(0))(vmapped_xkp1_res)
   # compute s^{k+1}
-  # s_kp1 = (aug_prox_mu * s_k - aug_viol_beta * t_k) / (aug_prox_mu + aug_viol_beta)
+  # s_kp1 = (solver_prox_mu * s_k - solver_viol_beta * vmapped_tk) / (solver_prox_mu + solver_viol_beta)
   s_kp1 = -vmapped_tk
-  s_kp1 = jnp.clip(s_kp1, 0, bvec)
+  s_kp1 = jnp.clip(s_kp1, 0, None)
 
   # compute f^{k+1}
   f_kp1s = -z_ks
-  f_kp1s = jnp.clip(f_kp1s, 0, 1)
+  f_kp1s = jnp.clip(f_kp1s, 0, None)
 
   # compute u^{k+1}
   vmapped_sum_xkp1 = jnp.sum(jnp.sum(x_kp1s, axis=1), axis=0)
