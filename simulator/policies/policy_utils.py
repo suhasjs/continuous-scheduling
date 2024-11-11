@@ -192,7 +192,7 @@ def pjadmm_iter_fun(k, state, problem_args, iter_args,
   f_kp1s = jnp.clip(f_kp1s, 0, None)
 
   # compute u^{k+1}
-  vmapped_sum_xkp1 = jnp.sum(jnp.sum(x_kp1s, axis=1), axis=0)
+  vmapped_sum_xkp1 = jnp.sum(x_kp1s, axis=[0,1])
   vmapped_ukp1 = u_k - solver_dual_tau * ((Amat @ vmapped_sum_xkp1) + s_kp1 - bvec)
   u_kp1 = vmapped_ukp1
 
@@ -202,10 +202,38 @@ def pjadmm_iter_fun(k, state, problem_args, iter_args,
   sum_xkp1s_tilde = jnp.sum(x_kp1s, axis=2)
   v_kp1s = v_ks - solver_dual_tau * (sum_xkp1s_tilde + f_kp1s - 1)
 
+  # compute residual for fast ADMM update
+  eta, d_k, alpha_k = other_state[0], other_state[1], other_state[2]
+  sum_xk = jnp.sum(x_ks, axis=[0, 1])
+  sum_xkp1 = vmapped_sum_xkp1
+  d_kp1 = solver_viol_beta * jnp.linalg.norm(Amat @ (sum_xkp1 - sum_xk)) + (1 / solver_viol_beta) * (jnp.linalg.norm(x_kp1s - x_ks))
+  # initialize d_k > (d_kp1 / eta) so that the first update does not cause restart
+  d_k = jnp.where(d_k < 1e-3, d_kp1 / eta + 1, d_k)
+
+  # updates with restart
+  # Could probably use momentum/ADAM or one of the other optimizers here
+  # alpha_kp1 = jnp.where(d_kp1 < eta * d_k, (1 + jnp.sqrt(1 + 4 * alpha_k**2)) / 2, alpha_k / 2)
+  alpha_kp1 = jnp.where(d_kp1 < eta * d_k, (1 + jnp.sqrt(1 + 4 * alpha_k**2)) / 2, 1)
+  alpha_kp1 = jnp.clip(alpha_kp1, 1, 25.0)
+  scale_factor = (alpha_k - 1) / alpha_kp1
+  # x_kp1s = jnp.where(d_kp1 < eta * d_k, x_kp1s + scale_factor * (x_kp1s - x_ks), x_kp1s)
+  # u_kp1 = jnp.where(d_kp1 < eta * d_k, u_kp1 + scale_factor * (u_kp1 - u_k), u_k)
+  # v_kp1s = jnp.where(d_kp1 < eta * d_k, v_kp1s + scale_factor * (v_kp1s - v_ks), v_ks)
+  x_kp1s = (x_kp1s + scale_factor * (x_kp1s - x_ks)).round(3)
+  s_kp1 = s_kp1 + scale_factor * (s_kp1 - s_k)
+  u_kp1 = u_kp1 + scale_factor * (u_kp1 - u_k)
+  v_kp1s = v_kp1s + scale_factor * (v_kp1s - v_ks)
+  f_kp1s = f_kp1s + scale_factor * (f_kp1s - f_ks)
+  d_k = jnp.where(d_kp1 < eta * d_k, d_kp1, d_k / eta)
+  x_diff = jnp.linalg.norm(x_kp1s - x_ks)
+  # jax.debug.print("Iteration {}: obj_val = {}, gpu_cnstr_viol_norm = {}, sumto1_cnstr_viol_norm={}, x_progress={}", k, obj_val.round(3), gpu_cnstr_viol_norm.round(3), sumto1_cnstr_viol_norm.round(3), x_diff.round(3))
+  other_state = other_state.at[1].set(d_kp1)
+  other_state = other_state.at[2].set(alpha_kp1)
+
   # compute stats for iteration
   obj_val = jnp.sum(jnp.multiply(vmapped_cmat, x_kp1s))
-  gpu_cnstr_viol = jnp.sum(jnp.clip((Amat @ vmapped_sum_xkp1 + s_kp1 - bvec), 0, None))
-  sumto1_cnstr_viol = (sum_xkp1s_tilde + f_kp1s - 1)
+  gpu_cnstr_viol = jnp.sum(jnp.clip((Amat @ jnp.sum(x_kp1s, axis=[0, 1]) + s_kp1 - bvec), 0, None))
+  sumto1_cnstr_viol = (jnp.sum(x_kp1s, axis=2) + f_kp1s - 1)
   binarized = jnp.sum(x_kp1s * (1 - x_kp1s))
   gpu_cnstr_viol_norm = gpu_cnstr_viol
   sumto1_cnstr_viol_norm = jnp.linalg.norm(sumto1_cnstr_viol).round(3)
@@ -216,28 +244,6 @@ def pjadmm_iter_fun(k, state, problem_args, iter_args,
     "binarization": binarized
   }
   stats = jax.tree_map(lambda x, y: x.at[k].set(y), stats, iter_stats)
-
-  # compute residual for fast ADMM update
-  eta, d_k, alpha_k = other_state[0], other_state[1], other_state[2]
-  sum_xk = jnp.sum(jnp.sum(x_kp1s, axis=1), axis=0)
-  sum_xkp1 = vmapped_sum_xkp1
-  d_kp1 = solver_viol_beta * jnp.linalg.norm(Amat @ (sum_xkp1 - sum_xk)) + (1 / solver_viol_beta) * (jnp.linalg.norm(x_kp1s - x_ks))
-  # initialize d_k > (d_kp1 / eta) so that the first update does not cause restart
-  d_k = jnp.where(d_k < 1e-3, d_kp1 / eta + 1, d_k)
-
-  # updates with restart
-  # Could probably use momentum/ADAM or one of the other optimizers here
-  alpha_kp1 = jnp.where(d_kp1 < eta * d_k, (1 + jnp.sqrt(1 + 4 * alpha_k**2)) / 2, alpha_k / 2)
-  alpha_kp1 = jnp.clip(alpha_kp1, 0.25, 25.0)
-  scale_factor = (alpha_k - 1) / alpha_kp1
-  x_kp1s = jnp.where(d_kp1 < eta * d_k, x_kp1s + scale_factor * (x_kp1s - x_ks), x_kp1s)
-  u_kp1 = jnp.where(d_kp1 < eta * d_k, u_kp1 + scale_factor * (u_kp1 - u_k), u_k)
-  v_kp1s = jnp.where(d_kp1 < eta * d_k, v_kp1s + scale_factor * (v_kp1s - v_ks), v_ks)
-  d_k = jnp.where(d_kp1 < eta * d_k, d_kp1, d_k / eta)
-  x_diff = jnp.linalg.norm(x_kp1s - x_ks)
-  # jax.debug.print("Iteration {}: obj_val = {}, gpu_cnstr_viol_norm = {}, sumto1_cnstr_viol_norm={}, x_progress={}", k, obj_val.round(3), gpu_cnstr_viol_norm.round(3), sumto1_cnstr_viol_norm.round(3), x_diff.round(3))
-  other_state = other_state.at[1].set(d_kp1)
-  other_state = other_state.at[2].set(alpha_kp1)
 
   new_state = (x_kp1s, u_kp1, s_kp1, f_kp1s, v_kp1s, vmapped_lbfgsb_state, other_state, stats)
   return new_state
