@@ -69,11 +69,12 @@ def sia_auglag_fun(xikp1, c_is, rki, xki, yki, aug_viol_beta, aug_prox_mu, aug_b
   scalar_add_val = jax.tree_map(lambda x: jnp.sum(x), reshaped_xikp1)
   ret = jaxopt.tree_util.tree_add_scalar_mul(ret, -1 * lambda_no_alloc, scalar_add_val)
   # add beta/2 * || A * sum_i (x_i) + s - b - u ||_2^2 term --> GPU constraint violation
+  A_norm = jnp.linalg.norm(Amat)
   gpu_cnstr_viol = jaxopt.tree_util.tree_l2_norm(jax.tree_map(lambda x, rki: Amat @ jnp.sum(x, axis=0) + rki, reshaped_xikp1, rki), squared=True)
-  ret = jaxopt.tree_util.tree_add_scalar_mul(ret, (aug_viol_beta / 2), gpu_cnstr_viol)
+  ret = jaxopt.tree_util.tree_add_scalar_mul(ret, (aug_viol_beta / 2) * (1 / A_norm), gpu_cnstr_viol)
   # add beta/2 * || sum (x_i) + f - 1 - v ||_2^2 term --> sum-to-1 constraint violation
   sumto_1_cnstr_viol = jaxopt.tree_util.tree_l2_norm(jax.tree_map(lambda x, yki: jnp.sum(x, axis=1) + yki, reshaped_xikp1, yki), squared=True)
-  ret = jaxopt.tree_util.tree_add_scalar_mul(ret, (block_size * aug_viol_beta / 2), sumto_1_cnstr_viol)
+  ret = jaxopt.tree_util.tree_add_scalar_mul(ret, (aug_viol_beta / 2), sumto_1_cnstr_viol)
   # add mu/2 * || x - x^k ||_2^2 term --> proximal term for primals
   prox_term = jaxopt.tree_util.tree_l2_norm(jax.tree_map(lambda x, y: x - y, reshaped_xikp1, xki), squared=True)
   ret = jaxopt.tree_util.tree_add_scalar_mul(ret, (aug_prox_mu / 2), prox_term)
@@ -100,9 +101,9 @@ def initialize_subproblem_solver(lbfgs_solver_params, init_params, auglag_other_
   specialized_auglag_fun = jax.jit(jax.tree_util.Partial(sia_auglag_fun, **auglag_other_params), backend=solver_backend)
 
   #### Initialize LBFGS-B solver
-  subproblem_solver = jaxopt.LBFGSB(fun=specialized_auglag_fun, jit=True, unroll=True, implicit_diff=False,
-                                    maxiter=lbfgs_max_iters, tol=1e-3, stepsize=0.9, 
-                                    history_size=lbfgs_history_size, use_gamma=True)
+  subproblem_solver = jaxopt.LBFGSB(fun=specialized_auglag_fun, jit=True, unroll=False, implicit_diff=False,
+                                    maxiter=lbfgs_max_iters, tol=5e-3, stepsize=0.9, 
+                                    history_size=lbfgs_history_size, use_gamma=False)
   # Initialize subproblem state for one block
   subproblem_solver_state = subproblem_solver.init_state(init_params=job_primals_k[0, :].reshape(-1), 
                                                           bounds=job_primal_bounds, c_is=vmapped_cmat[0, :, :], 
@@ -118,6 +119,7 @@ def initialize_subproblem_solver(lbfgs_solver_params, init_params, auglag_other_
                     sum_vec_k, solver_viol_beta, solver_prox_mu, solver_bin_lambda)
   if solver_backend == "cpu":
     vmapped_lbfgsb_state= jax.pmap(subproblem_solver.run, in_axes=vmap_broadcast_in_axes, backend="cpu")(*broadcast_args)
+    # vmapped_lbfgsb_state= jax.vmap(subproblem_solver.run, in_axes=vmap_broadcast_in_axes)(*broadcast_args)
   else:
     vmapped_lbfgsb_state= jax.vmap(subproblem_solver.run, in_axes=vmap_broadcast_in_axes)(*broadcast_args)
   return subproblem_solver, vmapped_lbfgsb_state
@@ -177,6 +179,7 @@ def pjadmm_iter_fun(k, state, problem_args, iter_args,
   vmap_in_axes = (jaxopt.OptStep(0, 0), (None, None), 0, 0, 0, 0, None, None, None)
   if solver_backend == "cpu":
     vmapped_lbfgsb_state = jax.pmap(subproblem_solver.run, in_axes=vmap_in_axes, backend='cpu')(*vmapped_args)
+    # vmapped_lbfgsb_state = jax.vmap(subproblem_solver.run, in_axes=vmap_in_axes)(*vmapped_args)
   else:
     vmapped_lbfgsb_state = jax.vmap(subproblem_solver.run, in_axes=vmap_in_axes)(*vmapped_args)
 
@@ -221,22 +224,28 @@ def pjadmm_iter_fun(k, state, problem_args, iter_args,
   # v_kp1s = jnp.where(d_kp1 < eta * d_k, v_kp1s + scale_factor * (v_kp1s - v_ks), v_ks)
   x_kp1s = (x_kp1s + scale_factor * (x_kp1s - x_ks)).round(3)
   s_kp1 = s_kp1 + scale_factor * (s_kp1 - s_k)
+  s_kp1 = jnp.clip(s_kp1, 0, None)
   u_kp1 = u_kp1 + scale_factor * (u_kp1 - u_k)
   v_kp1s = v_kp1s + scale_factor * (v_kp1s - v_ks)
   f_kp1s = f_kp1s + scale_factor * (f_kp1s - f_ks)
+  f_kp1s = jnp.clip(f_kp1s, 0, None)
   d_k = jnp.where(d_kp1 < eta * d_k, d_kp1, d_k / eta)
   x_diff = jnp.linalg.norm(x_kp1s - x_ks)
+  # jax.debug.print("x_diff: {x_diff}", x_diff=x_diff.round(3))
   # jax.debug.print("Iteration {}: obj_val = {}, gpu_cnstr_viol_norm = {}, sumto1_cnstr_viol_norm={}, x_progress={}", k, obj_val.round(3), gpu_cnstr_viol_norm.round(3), sumto1_cnstr_viol_norm.round(3), x_diff.round(3))
   other_state = other_state.at[1].set(d_kp1)
   other_state = other_state.at[2].set(alpha_kp1)
 
   # compute stats for iteration
   obj_val = jnp.sum(jnp.multiply(vmapped_cmat, x_kp1s))
-  gpu_cnstr_viol = jnp.sum(jnp.clip((Amat @ jnp.sum(x_kp1s, axis=[0, 1]) + s_kp1 - bvec), 0, None))
-  sumto1_cnstr_viol = (jnp.sum(x_kp1s, axis=2) + f_kp1s - 1)
   binarized = jnp.sum(x_kp1s * (1 - x_kp1s))
-  gpu_cnstr_viol_norm = gpu_cnstr_viol
+  gpu_cnstr_viol = bvec - s_kp1 - Amat @ jnp.sum(x_kp1s, axis=[0, 1])
+  # jax.debug.print("GPU constraint violation: {gpu_cnstr_viol}", gpu_cnstr_viol=gpu_cnstr_viol)
+  sumto1_cnstr_viol = (jnp.sum(x_kp1s, axis=2) + f_kp1s - 1).flatten()
+  # jax.debug.print("Sumto1 constraint violation: {sumto1_cnstr_viol}", sumto1_cnstr_viol=sumto1_cnstr_viol)
+  gpu_cnstr_viol_norm = jnp.linalg.norm(gpu_cnstr_viol).round(3)
   sumto1_cnstr_viol_norm = jnp.linalg.norm(sumto1_cnstr_viol).round(3)
+  # jax.debug.print("Sum(x)={x_sum}", x_sum=jnp.sum(x_kp1s, axis=[0, 1, 2]).round(3))
   iter_stats = {
     "gpu_cnstr_viol_norms": gpu_cnstr_viol_norm,
     "sumto1_cnstr_viol_norms": sumto1_cnstr_viol_norm,
