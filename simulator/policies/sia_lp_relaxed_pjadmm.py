@@ -58,7 +58,7 @@ class SiaLPRelaxedPJADMM(SiaILP):
     # minimum change in block size for solver
     self.solver_block_size_scale_factor = solver_options.pop('block_size_scale_factor', 1.3)
     # target number of blocks for solver --> for constant parallelism
-    self.solver_target_num_blocks = solver_options.pop('target_num_blocks', 8)
+    self.solver_target_num_blocks = solver_options.pop('target_num_blocks', 4)
     self.solver_allowed_block_sizes = []
     for i in range(25):
       scale_factor = self.solver_block_size_scale_factor ** i
@@ -304,9 +304,9 @@ class SiaLPRelaxedPJADMM(SiaILP):
       vmapped_cmat, Amat, bvec, primal_bounds = params
       solver_viol_beta, solver_prox_mu, solver_bin_lambda = constants
       # additional variables
-      sum_vec_k = job_slacks_k - 1 - job_duals_k
-      vmapped_tk = (Amat @ job_primals_k.sum(axis=[0, 1]) - bvec - gpu_duals_k)
-      gpu_vec_k = vmapped_tk - jax.vmap(lambda x: Amat @ x)(job_primals_k.sum(axis=1)) + gpu_slacks_k
+      sum_vec_k = job_slacks_k - 1 + job_duals_k
+      t_k = Amat @ job_primals_k.sum(axis=[0, 1]) - bvec + gpu_duals_k
+      gpu_vec_k = t_k + gpu_slacks_k - jax.vmap(lambda x: Amat @ x)(job_primals_k.sum(axis=1))
       subproblem_solver_init_params = {
         "job_primals_k": job_primals_k, "job_primal_bounds": primal_bounds,
         "job_slacks_k": job_slacks_k, "job_duals_k": job_duals_k,
@@ -336,7 +336,7 @@ class SiaLPRelaxedPJADMM(SiaILP):
     A_singular_vals = jax.numpy.linalg.svdvals(Amat)
     min_rho = self.solver_viol_beta * (self.solver_target_num_blocks / (2 - self.solver_dual_tau) - 1) * (jnp.max(A_singular_vals[0])**2)
     rprint(f"Min rho: {min_rho}")
-    min_rho = 50
+    min_rho = 100
     constants = (self.solver_viol_beta, self.solver_prox_mu, self.solver_bin_lambda)
     subproblem_solver, vmapped_subproblem_state = init_subproblem_solver_helper(opt_state, params, constants)
     #### Start solver loop
@@ -354,7 +354,8 @@ class SiaLPRelaxedPJADMM(SiaILP):
     
     problem_args = {
       "Amat": Amat, "bvec": bvec, "vmapped_cmat": vmapped_cmat, "job_primal_bounds": primal_bounds,
-      "cnstr_scale_factor": cnstr_scale_factor, "obj_scale_factor": obj_scale_factor
+      "cnstr_scale_factor": cnstr_scale_factor, "obj_scale_factor": obj_scale_factor,
+      "lambda_no_alloc": self.lambda_no_alloc
     }
     # max_beta = 5*self.num_jobs / 100
     max_beta = 1

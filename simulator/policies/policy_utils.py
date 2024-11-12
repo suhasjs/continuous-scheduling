@@ -21,11 +21,8 @@ def round_allocations_largest(partial_allocations, cluster_free_gpus):
 '''
     Augmented Lagrangian:
     L(x, s, f, u, v) = sum_i { c_i^T x_i } +                                  <--- objective
-                      beta/2 * || A * sum_i (x_i) + s - b - u ||_2^2 +       <--- GPU constraint violation
-                      beta/2 * sum_i (|| x_i^T * 1 + f_i - 1 - v_i ||_2^2) + <--- sum-to-1 constraint violation
-                      mu/2 * || x - x^k ||_2^2 +                             <--- proximal term for primal
-    [IGNORE]           mu/2 * || s - s^k ||_2^2 +                             <--- proximal term for GPU slack
-    [IGNORE]           mu/2 * || f - f^k ||_2^2                               <--- proximal term for alloc slack
+                      beta/2 * || A * sum_i (x_i) + s - b + u ||_2^2 +       <--- GPU constraint violation
+                      beta/2 * sum_i (|| x_i^T * 1 + f_i - 1 + v_i ||_2^2) + <--- sum-to-1 constraint violation
     where x = [x_1, x_2, ..., x_n],         <--- primal variables, one for each (job, config) pair
           s = [s_1, s_2, ..., s_m],         <--- slack variables, one for each GPU type
           f = [f_1, f_2, ..., f_n]          <--- slack variables, one for each job
@@ -34,29 +31,27 @@ def round_allocations_largest(partial_allocations, cluster_free_gpus):
     subject to 0 <= x_i <= 1 for all i
 
     ### Prox Jacobi ADMM Iteration (k -> k+1):
-    (1) x_i^{k+1} = argmin_{x_i} { c_i^T x_i +                                 <--- objective
-                                  (beta/2) * || A * x_i + r_i^k ||_2^2  +      <--- GPU constraint violation
-                                  (beta/2) * || x_i^T * 1 + y_i^k ||_2^2 +     <--- sum-to-1 constraint violation
+    (1) x_i^{k+1} = argmin_{x_i} { L(x_j^{k}, s^{k}, f^{k}, u^{k}, v^{k}) +  <--- AL objective
                                   (mu/2) * || x_i - x_i^k ||_2^2               <--- proximal term
                                 }
-      where r_i^k = (A * (sum_{j != i} x_j^{k}) + s^k - b - u^k)        --> jacobi decomposition of GPU constraints
-            y_i^k = (f_i^k - 1 - v_i^k)                                 --> jacobi decomposition of sum-to-1 constraints
+      where r_i^k = (A * (sum_{j != i} x_j^{k}) + s^k - b + u^k)        --> jacobi decomposition of GPU constraints
+            y_i^k = (f_i^k - 1 + v_i^k)                                 --> jacobi decomposition of sum-to-1 constraints
       subject to 0 <= x_i <= 1 for all i                                --> box constraints on x_i
-    (2) s^{k+1} = argmin_{s} { (beta/2) * || s + t^k ||_2^2 +           <--- GPU constraint violation
-                              (mu/2) * || s - s^k ||_2^2               <--- proximal term
+    (2) s^{k+1} = argmin_{s} { L(x_i^{k}, s, f^{k}, u^{k}, v_i^{k}) + <--- AL objective
+                              (mu/2) * || s - s^k ||_2^2                <--- proximal term
                             }
-      where t^k = (sum_i (A * x_i^{k}) - b - u^k)
+      where t^k = (sum_i (A * x_i^{k}) - b + u^k)
       We can compute s^{k+1} in closed form as:
-      s^{k+1} = min(max(0, (mu * s^k - beta * t^k) / (mu + beta)), b)
-    (3) f_i^{k+1} = argmin_{f_i} { (beta/2) * || f_i + z_i^k ||_2^2 +   <--- sum-to-1 constraint violation
-                                  (mu/2) * || f_i - f_i^k ||_2^2       <--- proximal term
+      s^{k+1} = max(0, (mu * s^k - beta * t^k) / (mu + beta))
+    (3) f_i^{k+1} = argmin_{f_i} { L(x_i^{k}, s^{k}, f_i, u^{k}, v_i^{k}) + <--- AL objective
+                                  (mu/2) * || f_i - f_i^k ||_2^2              <--- proximal term
                                 }
-      where z_i^k = (x_i^{k}^T * 1 - 1 - v_i^k)
+      where z_i^k = (x_i^{k}^T * 1 - 1 + v_i^k)
       We can compute f_i^{k+1} in closed form as:
-      f_i^{k+1} = min(max(0, (mu * f_i^k - beta * z_i^k) / (mu + beta)), 1)
-    (4) u^{k+1} = u^k - tau * (A * x^{k+1} + s^{k+1} - b)         <--- dual update for GPU constraints
-    (5) v^{k+1} = v^k - tau * (x^{k+1}^T*1 + f^{k+1} - 1)             <--- dual update for sum-to-1 constraints
-    '''
+      f_i^{k+1} = max(0, (mu * f_i^k - beta * z_i^k) / (mu + beta))
+    (4) u^{k+1} = u^k + tau * (A * sum_i x_i^{k+1} + s^{k+1} - b)         <--- dual ascent update for GPU constraints
+    (5) v_i^{k+1} = v_i^k + tau * (x_i^{k+1}^T*1 + f_i^{k+1} - 1) <--- dual ascent update for sum-to-1 constraints
+'''
 # Captures: num_configs, lambda_no_alloc, Amat, bvec
 # Augmented Lagrangian for the Sia ILP/LP-relaxation policy
 def sia_auglag_fun(xikp1, c_is, rki, xki, yki, aug_viol_beta, aug_prox_mu, aug_bin_lambda, 
@@ -141,6 +136,7 @@ def pjadmm_iter_fun(k, state, problem_args, iter_args,
   # problem args
   Amat, bvec = problem_args["Amat"], problem_args["bvec"]
   vmapped_cmat = problem_args["vmapped_cmat"]
+  lambda_no_alloc = problem_args["lambda_no_alloc"]
   job_primal_bounds = problem_args["job_primal_bounds"]
   cnstr_scale_factor, obj_scale_factor = problem_args["cnstr_scale_factor"], problem_args["obj_scale_factor"]
 
@@ -153,27 +149,28 @@ def pjadmm_iter_fun(k, state, problem_args, iter_args,
   # compute rki, tk, yki, zki and set parameter vals for x,s problems
   # sum over jobs for each config in a block
   # shape: (num_blocks, nconfigs)
-  block_sum_xk_0 = jnp.sum(x_ks, axis=1)
+  block_sum_xk_1 = jnp.sum(x_ks, axis=1)
   # sum over configs for each job in a block
   # shape: (num_blocks, block_size)
-  block_sum_xk_1 = jnp.sum(x_ks, axis=2)
+  block_sum_xk_2 = jnp.sum(x_ks, axis=2)
   # compute vmapped
-  z_ks = block_sum_xk_1 - 1 - v_ks
-  y_ks = f_ks - 1 - v_ks
-  vmapped_tk = (Amat @ jnp.sum(block_sum_xk_0, axis=0)) - bvec - u_k
-  r_ks = vmapped_tk - jax.vmap(lambda x: Amat @ x)(block_sum_xk_0) + s_k
+  z_ks = block_sum_xk_2 - 1 + v_ks
+  # jax.debug.print("Shape(z_ks): {zksshape}", zksshape=z_ks.shape)
+  y_ks = f_ks - 1 + v_ks
+  # jax.debug.print("Shape(f_ks): {fksshape}", fksshape=f_ks.shape)
+  # jax.debug.print("Shape(y_ks): {yksshape}", yksshape=y_ks.shape)
+  # t^k = (sum_i (A * x_i^{k}) - b + u^k)
+  t_k = (Amat @ jnp.sum(block_sum_xk_1, axis=0)) - bvec + u_k
+  # jax.debug.print("Shape(t_ks): {tksshape}", tksshape=t_k.shape)
+  # r_i^k = (A * (sum_{j != i} x_j^{k}) + s^k - b + u^k) --> i = block ID
+  r_ks = t_k + s_k - jax.vmap(lambda x: Amat @ x)(block_sum_xk_1)
+  # jax.debug.print("Shape(r_ks): {rksshape}", rksshape=r_ks.shape)
   
-  # compute x^{k+1}, f^{k+1}
+  #### Compute x^{k+1} with LBFGS-B solver #####
   # create inputs for vmapped solve
   init_xks = jax.vmap(lambda x: x.reshape(-1), in_axes=(0), out_axes=(0))(x_ks)
+  # jax.debug.print("Shape(init_xks): {ixksshape}", ixksshape=init_xks.shape)
   vmapped_lbfgsb_state = jaxopt.OptStep(init_xks, vmapped_lbfgsb_state.state)
-  '''
-  vmapped_args = {
-    "init_params" : vmapped_lbfgsb_state,
-    "c_is" : vmapped_cmat, "rki" : r_ks, "xki" : x_ks, "yki" : y_ks,
-    "aug_viol_beta" : solver_viol_beta, "aug_prox_mu" : solver_prox_mu
-  }
-  '''
   vmapped_args = (vmapped_lbfgsb_state, job_primal_bounds, vmapped_cmat, r_ks, x_ks, y_ks, 
                   solver_viol_beta, solver_prox_mu, solver_bin_lambda)
   vmap_in_axes = (jaxopt.OptStep(0, 0), (None, None), 0, 0, 0, 0, None, None, None)
@@ -185,30 +182,29 @@ def pjadmm_iter_fun(k, state, problem_args, iter_args,
 
   vmapped_xkp1_res = vmapped_lbfgsb_state.params
   x_kp1s = jax.vmap(lambda x: x.reshape(block_size, num_configs), in_axes=(0), out_axes=(0))(vmapped_xkp1_res)
-  # compute s^{k+1}
-  # s_kp1 = (solver_prox_mu * s_k - solver_viol_beta * vmapped_tk) / (solver_prox_mu + solver_viol_beta)
-  s_kp1 = -vmapped_tk
+  # jax.debug.print("Shape(x_kp1s): {xkps1shape}", xkps1shape=x_kp1s.shape)
+  
+  ####  Compute s^{k+1}, f^{k+1} using  closed-form ####
+  # s^{k+1} = max(0, (mu * s^k - beta * t^k) / (mu + beta))
+  s_kp1 = (solver_prox_mu * s_k - solver_viol_beta * t_k) / (solver_prox_mu + solver_viol_beta)
   s_kp1 = jnp.clip(s_kp1, 0, None)
 
-  # compute f^{k+1}
-  f_kp1s = -z_ks
+  # f_i^{k+1} = max(0, (mu * f_i^k - beta * z_i^k) / (mu + beta))
+  f_kp1s = (solver_prox_mu * f_ks - solver_viol_beta * z_ks) / (solver_prox_mu + solver_viol_beta)
   f_kp1s = jnp.clip(f_kp1s, 0, None)
 
-  # compute u^{k+1}
-  vmapped_sum_xkp1 = jnp.sum(x_kp1s, axis=[0,1])
-  vmapped_ukp1 = u_k - solver_dual_tau * ((Amat @ vmapped_sum_xkp1) + s_kp1 - bvec)
-  u_kp1 = vmapped_ukp1
+  #### Compute Dual updates ####
+  # u^{k+1} = u^k + tau * (A * sum_i x_i^{k+1} + s^{k+1} - b)
+  u_kp1 = u_k + solver_dual_tau * ((Amat @ jnp.sum(x_kp1s, axis=[0,1])) + s_kp1 - bvec)
 
   # compute v^{k+1}
-  # sum_xkp1_tilde = jnp.sum(x_kp1, axis=1)
-  # v_kp1 = v_k - dual_tau * (sum_xkp1_tilde + f_kp1 - 1)
-  sum_xkp1s_tilde = jnp.sum(x_kp1s, axis=2)
-  v_kp1s = v_ks - solver_dual_tau * (sum_xkp1s_tilde + f_kp1s - 1)
+  # v_i^{k+1} = v_i^k + tau * (x_i^{k+1}^T*1 + f_i^{k+1} - 1)
+  v_kp1s = v_ks + solver_dual_tau * (jnp.sum(x_kp1s, axis=2) + f_kp1s - 1)
 
   # compute residual for fast ADMM update
   eta, d_k, alpha_k = other_state[0], other_state[1], other_state[2]
   sum_xk = jnp.sum(x_ks, axis=[0, 1])
-  sum_xkp1 = vmapped_sum_xkp1
+  sum_xkp1 = jnp.sum(x_kp1s, axis=[0, 1])
   d_kp1 = solver_viol_beta * jnp.linalg.norm(Amat @ (sum_xkp1 - sum_xk)) + (1 / solver_viol_beta) * (jnp.linalg.norm(x_kp1s - x_ks))
   # initialize d_k > (d_kp1 / eta) so that the first update does not cause restart
   d_k = jnp.where(d_k < 1e-3, d_kp1 / eta + 1, d_k)
@@ -217,12 +213,12 @@ def pjadmm_iter_fun(k, state, problem_args, iter_args,
   # Could probably use momentum/ADAM or one of the other optimizers here
   # alpha_kp1 = jnp.where(d_kp1 < eta * d_k, (1 + jnp.sqrt(1 + 4 * alpha_k**2)) / 2, alpha_k / 2)
   alpha_kp1 = jnp.where(d_kp1 < eta * d_k, (1 + jnp.sqrt(1 + 4 * alpha_k**2)) / 2, 1)
-  alpha_kp1 = jnp.clip(alpha_kp1, 1, 25.0)
+  alpha_kp1 = jnp.clip(alpha_kp1, 1, 1.0)
   scale_factor = (alpha_k - 1) / alpha_kp1
   # x_kp1s = jnp.where(d_kp1 < eta * d_k, x_kp1s + scale_factor * (x_kp1s - x_ks), x_kp1s)
   # u_kp1 = jnp.where(d_kp1 < eta * d_k, u_kp1 + scale_factor * (u_kp1 - u_k), u_k)
   # v_kp1s = jnp.where(d_kp1 < eta * d_k, v_kp1s + scale_factor * (v_kp1s - v_ks), v_ks)
-  x_kp1s = (x_kp1s + scale_factor * (x_kp1s - x_ks)).round(3)
+  x_kp1s = x_kp1s + scale_factor * (x_kp1s - x_ks)
   s_kp1 = s_kp1 + scale_factor * (s_kp1 - s_k)
   s_kp1 = jnp.clip(s_kp1, 0, None)
   u_kp1 = u_kp1 + scale_factor * (u_kp1 - u_k)
@@ -230,14 +226,14 @@ def pjadmm_iter_fun(k, state, problem_args, iter_args,
   f_kp1s = f_kp1s + scale_factor * (f_kp1s - f_ks)
   f_kp1s = jnp.clip(f_kp1s, 0, None)
   d_k = jnp.where(d_kp1 < eta * d_k, d_kp1, d_k / eta)
-  x_diff = jnp.linalg.norm(x_kp1s - x_ks)
+  # x_diff = jnp.linalg.norm(x_kp1s - x_ks)
   # jax.debug.print("x_diff: {x_diff}", x_diff=x_diff.round(3))
   # jax.debug.print("Iteration {}: obj_val = {}, gpu_cnstr_viol_norm = {}, sumto1_cnstr_viol_norm={}, x_progress={}", k, obj_val.round(3), gpu_cnstr_viol_norm.round(3), sumto1_cnstr_viol_norm.round(3), x_diff.round(3))
   other_state = other_state.at[1].set(d_kp1)
   other_state = other_state.at[2].set(alpha_kp1)
 
   # compute stats for iteration
-  obj_val = jnp.sum(jnp.multiply(vmapped_cmat, x_kp1s))
+  obj_val = jnp.sum(jnp.multiply(vmapped_cmat, x_kp1s)) - lambda_no_alloc * jnp.sum(x_kp1s)
   binarized = jnp.sum(x_kp1s * (1 - x_kp1s))
   gpu_cnstr_viol = bvec - s_kp1 - Amat @ jnp.sum(x_kp1s, axis=[0, 1])
   # jax.debug.print("GPU constraint violation: {gpu_cnstr_viol}", gpu_cnstr_viol=gpu_cnstr_viol)
