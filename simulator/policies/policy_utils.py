@@ -67,6 +67,7 @@ def sia_auglag_fun(xikp1, c_is, rki, xki, yki, aug_viol_beta, aug_prox_mu, aug_b
   A_norm = jnp.linalg.norm(Amat)
   gpu_cnstr_viol = jaxopt.tree_util.tree_l2_norm(jax.tree_map(lambda x, rki: Amat @ jnp.sum(x, axis=0) + rki, reshaped_xikp1, rki), squared=True)
   ret = jaxopt.tree_util.tree_add_scalar_mul(ret, (aug_viol_beta / 2) * (1 / A_norm), gpu_cnstr_viol)
+  # ret = jaxopt.tree_util.tree_add_scalar_mul(ret, (aug_viol_beta / 2), gpu_cnstr_viol)
   # add beta/2 * || sum (x_i) + f - 1 - v ||_2^2 term --> sum-to-1 constraint violation
   sumto_1_cnstr_viol = jaxopt.tree_util.tree_l2_norm(jax.tree_map(lambda x, yki: jnp.sum(x, axis=1) + yki, reshaped_xikp1, yki), squared=True)
   ret = jaxopt.tree_util.tree_add_scalar_mul(ret, (aug_viol_beta / 2), sumto_1_cnstr_viol)
@@ -186,10 +187,13 @@ def pjadmm_iter_fun(k, state, problem_args, iter_args,
   
   ####  Compute s^{k+1}, f^{k+1} using  closed-form ####
   # s^{k+1} = max(0, (mu * s^k - beta * t^k) / (mu + beta))
+  t_k = (Amat @ jnp.sum(x_kp1s, axis=[0, 1])) - bvec + u_k
   s_kp1 = (solver_prox_mu * s_k - solver_viol_beta * t_k) / (solver_prox_mu + solver_viol_beta)
+  # jax.debug.print("s_kp1: {s_kp1}", s_kp1=s_kp1)
   s_kp1 = jnp.clip(s_kp1, 0, None)
 
   # f_i^{k+1} = max(0, (mu * f_i^k - beta * z_i^k) / (mu + beta))
+  z_ks = jnp.sum(x_kp1s, axis=2) - 1 + v_ks
   f_kp1s = (solver_prox_mu * f_ks - solver_viol_beta * z_ks) / (solver_prox_mu + solver_viol_beta)
   f_kp1s = jnp.clip(f_kp1s, 0, None)
 
@@ -220,11 +224,11 @@ def pjadmm_iter_fun(k, state, problem_args, iter_args,
   # v_kp1s = jnp.where(d_kp1 < eta * d_k, v_kp1s + scale_factor * (v_kp1s - v_ks), v_ks)
   x_kp1s = x_kp1s + scale_factor * (x_kp1s - x_ks)
   s_kp1 = s_kp1 + scale_factor * (s_kp1 - s_k)
-  s_kp1 = jnp.clip(s_kp1, 0, None)
+  # s_kp1 = jnp.clip(s_kp1, 0, None)
   u_kp1 = u_kp1 + scale_factor * (u_kp1 - u_k)
   v_kp1s = v_kp1s + scale_factor * (v_kp1s - v_ks)
   f_kp1s = f_kp1s + scale_factor * (f_kp1s - f_ks)
-  f_kp1s = jnp.clip(f_kp1s, 0, None)
+  # f_kp1s = jnp.clip(f_kp1s, 0, None)
   d_k = jnp.where(d_kp1 < eta * d_k, d_kp1, d_k / eta)
   # x_diff = jnp.linalg.norm(x_kp1s - x_ks)
   # jax.debug.print("x_diff: {x_diff}", x_diff=x_diff.round(3))

@@ -58,7 +58,7 @@ class SiaLPRelaxedPJADMM(SiaILP):
     # minimum change in block size for solver
     self.solver_block_size_scale_factor = solver_options.pop('block_size_scale_factor', 1.3)
     # target number of blocks for solver --> for constant parallelism
-    self.solver_target_num_blocks = solver_options.pop('target_num_blocks', 4)
+    self.solver_target_num_blocks = solver_options.pop('target_num_blocks', 8)
     self.solver_allowed_block_sizes = []
     for i in range(25):
       scale_factor = self.solver_block_size_scale_factor ** i
@@ -289,7 +289,7 @@ class SiaLPRelaxedPJADMM(SiaILP):
     else:
       cnstr_scale_factor = 1.0
     if self.solver_normalize_obj:
-      obj_scale_factor = jnp.mean(jnp.abs(vmapped_cmat)) * 10
+      obj_scale_factor = jnp.mean(jnp.abs(vmapped_cmat)) / 10
       # obj_scale_factor = self.num_jobs
       rprint(f"Scaling down c by {obj_scale_factor}")
       vmapped_cmat = vmapped_cmat / obj_scale_factor
@@ -336,7 +336,7 @@ class SiaLPRelaxedPJADMM(SiaILP):
     A_singular_vals = jax.numpy.linalg.svdvals(Amat)
     min_rho = self.solver_viol_beta * (self.solver_target_num_blocks / (2 - self.solver_dual_tau) - 1) * (jnp.max(A_singular_vals[0])**2)
     rprint(f"Min rho: {min_rho}")
-    min_rho = 100
+    min_rho = 50
     constants = (self.solver_viol_beta, self.solver_prox_mu, self.solver_bin_lambda)
     subproblem_solver, vmapped_subproblem_state = init_subproblem_solver_helper(opt_state, params, constants)
     #### Start solver loop
@@ -347,7 +347,7 @@ class SiaLPRelaxedPJADMM(SiaILP):
       "obj_vals": jnp.zeros(self.solver_iters_per_sync),
     }
     # other_state = (eta, d_k, alpha_k)
-    other_state = jnp.array([0.999, 0.0, 1.0])
+    other_state = jnp.array([0.995, 0.0, 1.0])
 
     init_loop_state = (job_primals_k, gpu_duals_k, gpu_slacks_k, job_slacks_k, 
                        job_duals_k, vmapped_subproblem_state, other_state, stats_k)
@@ -422,7 +422,7 @@ class SiaLPRelaxedPJADMM(SiaILP):
           rprint(f"\tGPU Duals: {gpu_duals_k}")
           rprint(f"\tGPU Slacks: {gpu_slacks_k.round(3)}")
           # gpu_cnstr_viol = bvec - jax.device_put(gpu_slacks_k, jax.devices()[0]) - Amat@jax.device_put(job_primals_k.sum(axis=[0, 1]), jax.devices()[0])
-          gpu_cnstr_viol = bvec - gpu_slacks_k - Amat@job_primals_k.sum(axis=[0, 1])
+          gpu_cnstr_viol = bvec - jax.device_put(gpu_slacks_k, jax.devices()[0]) - Amat@jax.device_put(job_primals_k.sum(axis=[0, 1]), jax.devices()[0])
           rprint(f"\tGPU Constraint Violations: {gpu_cnstr_viol.round(3)}")
           gpu_cnstr_viol_norms, sumto1_cnstr_viol_norms = stats_k['gpu_cnstr_viol_norms'], stats_k['sumto1_cnstr_viol_norms']
           # max_mu = iter_args["solver_viol_beta"] * (self.num_blocks - 1)
@@ -477,10 +477,13 @@ class SiaLPRelaxedPJADMM(SiaILP):
             # update other loop variables
             final_loop_state = (job_primals_k, gpu_duals_k, gpu_slacks_k, job_slacks_k, job_duals_k,
                                 vmapped_subproblem_state, other_state, stats_k)
-            problem_args = {
-              "Amat": Amat, "bvec": bvec, "vmapped_cmat": vmapped_cmat, "job_primal_bounds": primal_bounds,
-              "cnstr_scale_factor": cnstr_scale_factor, "obj_scale_factor": obj_scale_factor
-            }
+            # update problem args
+            problem_args["Amat"] = Amat
+            problem_args["bvec"] = bvec
+            problem_args["vmapped_cmat"] = vmapped_cmat
+            problem_args["job_primal_bounds"] = primal_bounds
+            problem_args["cnstr_scale_factor"] = cnstr_scale_factor
+            problem_args["obj_scale_factor"] = obj_scale_factor
             # iter_args["solver_prox_mu"] = iter_args["solver_prox_mu"] / 2
             # max_beta = 5*self.num_jobs / 100
             # max_beta = 1
