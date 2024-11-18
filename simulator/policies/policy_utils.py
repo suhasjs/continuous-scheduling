@@ -188,13 +188,15 @@ def pjadmm_iter_fun(k, state, problem_args, iter_args,
   ####  Compute s^{k+1}, f^{k+1} using  closed-form ####
   # s^{k+1} = max(0, (mu * s^k - beta * t^k) / (mu + beta))
   t_k = (Amat @ jnp.sum(x_kp1s, axis=[0, 1])) - bvec + u_k
-  s_kp1 = (solver_prox_mu * s_k - solver_viol_beta * t_k) / (solver_prox_mu + solver_viol_beta)
+  # s_kp1 = (solver_prox_mu * s_k - solver_viol_beta * t_k) / (solver_prox_mu + solver_viol_beta)
+  s_kp1 = -t_k
   # jax.debug.print("s_kp1: {s_kp1}", s_kp1=s_kp1)
   s_kp1 = jnp.clip(s_kp1, 0, None)
 
   # f_i^{k+1} = max(0, (mu * f_i^k - beta * z_i^k) / (mu + beta))
   z_ks = jnp.sum(x_kp1s, axis=2) - 1 + v_ks
-  f_kp1s = (solver_prox_mu * f_ks - solver_viol_beta * z_ks) / (solver_prox_mu + solver_viol_beta)
+  # f_kp1s = (solver_prox_mu * f_ks - solver_viol_beta * z_ks) / (solver_prox_mu + solver_viol_beta)
+  f_kp1s = -z_ks
   f_kp1s = jnp.clip(f_kp1s, 0, None)
 
   #### Compute Dual updates ####
@@ -217,8 +219,9 @@ def pjadmm_iter_fun(k, state, problem_args, iter_args,
   # Could probably use momentum/ADAM or one of the other optimizers here
   # alpha_kp1 = jnp.where(d_kp1 < eta * d_k, (1 + jnp.sqrt(1 + 4 * alpha_k**2)) / 2, alpha_k / 2)
   alpha_kp1 = jnp.where(d_kp1 < eta * d_k, (1 + jnp.sqrt(1 + 4 * alpha_k**2)) / 2, 1)
-  alpha_kp1 = jnp.clip(alpha_kp1, 1, 1.0)
-  scale_factor = (alpha_k - 1) / alpha_kp1
+  alpha_kp1 = jnp.clip(alpha_kp1, 1, 10.0)
+  # scale_factor = (alpha_k - 1) / alpha_kp1
+  scale_factor = 0
   # x_kp1s = jnp.where(d_kp1 < eta * d_k, x_kp1s + scale_factor * (x_kp1s - x_ks), x_kp1s)
   # u_kp1 = jnp.where(d_kp1 < eta * d_k, u_kp1 + scale_factor * (u_kp1 - u_k), u_k)
   # v_kp1s = jnp.where(d_kp1 < eta * d_k, v_kp1s + scale_factor * (v_kp1s - v_ks), v_ks)
