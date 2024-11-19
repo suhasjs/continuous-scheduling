@@ -219,18 +219,18 @@ def pjadmm_iter_fun(k, state, problem_args, iter_args,
   # Could probably use momentum/ADAM or one of the other optimizers here
   # alpha_kp1 = jnp.where(d_kp1 < eta * d_k, (1 + jnp.sqrt(1 + 4 * alpha_k**2)) / 2, alpha_k / 2)
   alpha_kp1 = jnp.where(d_kp1 < eta * d_k, (1 + jnp.sqrt(1 + 4 * alpha_k**2)) / 2, 1)
-  alpha_kp1 = jnp.clip(alpha_kp1, 1, 10.0)
-  # scale_factor = (alpha_k - 1) / alpha_kp1
-  scale_factor = 0
+  alpha_kp1 = jnp.clip(alpha_kp1, 1, 200.0)
+  scale_factor = (alpha_k - 1) / alpha_kp1
+  # scale_factor = 0
   # x_kp1s = jnp.where(d_kp1 < eta * d_k, x_kp1s + scale_factor * (x_kp1s - x_ks), x_kp1s)
   # u_kp1 = jnp.where(d_kp1 < eta * d_k, u_kp1 + scale_factor * (u_kp1 - u_k), u_k)
   # v_kp1s = jnp.where(d_kp1 < eta * d_k, v_kp1s + scale_factor * (v_kp1s - v_ks), v_ks)
-  x_kp1s = x_kp1s + scale_factor * (x_kp1s - x_ks)
-  s_kp1 = s_kp1 + scale_factor * (s_kp1 - s_k)
-  # s_kp1 = jnp.clip(s_kp1, 0, None)
-  u_kp1 = u_kp1 + scale_factor * (u_kp1 - u_k)
+  # x_kp1s = x_kp1s + scale_factor * (x_kp1s - x_ks)
+  # s_kp1 = s_kp1 + scale_factor * (s_kp1 - s_k)
+  # u_kp1 = u_kp1 + scale_factor * (u_kp1 - u_k)
   v_kp1s = v_kp1s + scale_factor * (v_kp1s - v_ks)
-  f_kp1s = f_kp1s + scale_factor * (f_kp1s - f_ks)
+  # f_kp1s = f_kp1s + scale_factor * (f_kp1s - f_ks)
+  # s_kp1 = jnp.clip(s_kp1, 0, None)
   # f_kp1s = jnp.clip(f_kp1s, 0, None)
   d_k = jnp.where(d_kp1 < eta * d_k, d_kp1, d_k / eta)
   # x_diff = jnp.linalg.norm(x_kp1s - x_ks)

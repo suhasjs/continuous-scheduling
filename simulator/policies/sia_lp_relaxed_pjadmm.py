@@ -75,7 +75,7 @@ class SiaLPRelaxedPJADMM(SiaILP):
     self.solver_backend = solver_options.pop('backend', 'cpu')
     self.solver_normalize_cnstrs = solver_options.pop('normalize_cnstrs', True)
     self.solver_normalize_obj = solver_options.pop('normalize_obj', True)
-    self.solver_warm_start_duals = False
+    self.solver_warm_start_duals = True
     self.lbfgs_max_iters = 4
     self.lbfgs_history_size = 4
     self.print_compilation_stats = False
@@ -358,7 +358,7 @@ class SiaLPRelaxedPJADMM(SiaILP):
     }
     # max_beta = 5*self.num_jobs / 100
     # prox_mu = self.solver_viol_beta * job_primals_k.shape[0]
-    max_beta, min_rho = 0.100, 1e-3
+    max_beta, min_rho = 0.100, 1e-4
     prox_mu = min_rho
     iter_args = {
       "solver_viol_beta": self.solver_viol_beta, "solver_prox_mu": prox_mu, 
@@ -425,6 +425,7 @@ class SiaLPRelaxedPJADMM(SiaILP):
           rprint(f"\tGPU Duals: {gpu_duals_k}")
           rprint(f"\tGPU Slacks: {gpu_slacks_k.round(3)}")
           rprint(f"\tLBFGS-B error: {vmapped_subproblem_state.state.error}")
+          rprint(f"\tJob Duals: {job_duals_k.flatten().round(2)}")
           # gpu_cnstr_viol = bvec - jax.device_put(gpu_slacks_k, jax.devices()[0]) - Amat@jax.device_put(job_primals_k.sum(axis=[0, 1]), jax.devices()[0])
           gpu_cnstr_viol_norms, sumto1_cnstr_viol_norms = stats_k['gpu_cnstr_viol_norms'], stats_k['sumto1_cnstr_viol_norms']
           # max_mu = iter_args["solver_viol_beta"] * (self.num_blocks - 1)
