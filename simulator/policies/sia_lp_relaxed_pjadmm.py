@@ -358,7 +358,7 @@ class SiaLPRelaxedPJADMM(SiaILP):
     }
     # max_beta = 5*self.num_jobs / 100
     # prox_mu = self.solver_viol_beta * job_primals_k.shape[0]
-    max_beta, min_rho = 1.00, 1e-2
+    max_beta, min_rho = 0.100, 1e-3
     prox_mu = min_rho
     iter_args = {
       "solver_viol_beta": self.solver_viol_beta, "solver_prox_mu": prox_mu, 
