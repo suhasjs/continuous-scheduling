@@ -86,6 +86,7 @@ class SiaILP(AbstractPolicy):
     config_ngpus = {}
     idx_to_config = {}
     idx = 0
+    rprint(f"Generating configurations...")
     for cluster in self.cluster_ordering:
       ngpus = 1
       nnodes = 1
@@ -105,7 +106,7 @@ class SiaILP(AbstractPolicy):
         # grab whole nodes for distributed allocs
           nnodes += 1
           ngpus = nnodes * self.ngpus_per_node[cluster]
-      rprint(f"GPU type: {cluster}, max_ngpus: {max_ngpus}, #configs: {len(config_ngpus[cluster])}")
+      rprint(f"\tGPU type: {cluster}, max_ngpus: {max_ngpus}, #configs: {len(config_ngpus[cluster])}")
     # construct constraint matrix
     self.num_configs = len(configs)
     rprint(f"Total #configs: {self.num_configs}")

@@ -16,6 +16,10 @@ os.environ["XLA_FLAGS"] = '--xla_force_host_platform_device_count=16'
 
 class SiaLPRelaxedPJADMM(SiaILP):
   def __init__(self, num_nodes, ngpus_per_node, policy_options, solver_options):
+    rprint(f"Initializing SiaLPRelaxedPJADMM:")
+    rprint(f"\tPolicy options: {policy_options}")
+    rprint(f"\tSolver options: {solver_options}")
+    rprint(f"\tCluster configuration: {num_nodes}, {ngpus_per_node}")
     # cluster configuration
     self.num_nodes = num_nodes
     self.ngpus_per_node = ngpus_per_node
@@ -45,6 +49,7 @@ class SiaLPRelaxedPJADMM(SiaILP):
 
     # stats
     self.solver_stats = []
+    self.solver_statsv2 = []
 
     # solver options
     self.solver_options = solver_options
@@ -197,6 +202,7 @@ class SiaLPRelaxedPJADMM(SiaILP):
       return opt_state, params
     # 1. Save warm start state for early bound job ids
     job_primals_partial_sum = jnp.zeros((self.num_configs,))
+    early_bound_objval = 0.0
     for i in early_bound_ids:
       jobname = self.job_ordering[i]
       block_id, job_idx_in_block = (i // self.solver_block_size), i % self.solver_block_size
@@ -204,6 +210,7 @@ class SiaLPRelaxedPJADMM(SiaILP):
       self.job_primals[jobname] = np.array(job_primals_k[block_id, job_idx_in_block, :])
       self.job_slacks[jobname] = np.array(job_slacks_k[block_id, i])
       self.job_duals[jobname] = np.array(job_duals_k[block_id, i])
+      early_bound_objval += float(jnp.dot(vmapped_cmat[block_id, job_idx_in_block, :], job_primals_k[block_id, job_idx_in_block, :]) + self.lambda_no_alloc*jnp.sum(job_primals_k[block_id, job_idx_in_block, :]))
     
     # 2. Create new jobname -> job_id mapping
     new_njobs = self.num_jobs - len(early_bound_ids)
@@ -257,7 +264,7 @@ class SiaLPRelaxedPJADMM(SiaILP):
     new_optstate = (new_job_primals_k, new_job_slacks_k, new_job_duals_k, gpu_duals_k, gpu_slacks_k)
     new_primal_bounds = (jnp.zeros_like(new_job_primals_k[0, :].reshape(-1)), jnp.ones_like(new_job_primals_k[0, :].reshape(-1)))
     new_params = (new_vmapped_cmat, new_Amat, new_bvec, new_primal_bounds)
-    return new_optstate, new_params
+    return new_optstate, new_params, early_bound_objval
 
   def solve(self):
     setup_start_t = time.time()
@@ -358,10 +365,9 @@ class SiaLPRelaxedPJADMM(SiaILP):
     }
     # max_beta = 5*self.num_jobs / 100
     # prox_mu = self.solver_viol_beta * job_primals_k.shape[0]
-    max_beta, min_rho = 0.100, 1e-4
-    prox_mu = min_rho
+    max_beta, max_rho = self.solver_viol_beta, self.solver_prox_mu
     iter_args = {
-      "solver_viol_beta": self.solver_viol_beta, "solver_prox_mu": prox_mu, 
+      "solver_viol_beta": max_beta, "solver_prox_mu": max_rho, 
       "solver_bin_lambda": self.solver_bin_lambda, "solver_dual_tau": self.solver_dual_tau
     }
 
@@ -386,9 +392,10 @@ class SiaLPRelaxedPJADMM(SiaILP):
     final_loop_state = init_loop_state
     iter_times_ms, previous_iter_vals = [], None
     previous_iter_vals, track_stats = None, None
+    reconfigure_time_ms = 0.0
     solve_start_t = time.time()
     has_solver_converged = False
-    num_converged = [(0, 0)]
+    early_bound_stats = [(0, 0, 0.0)]
     for i in range(self.solver_max_iters):
       # append stats to previous iters
       start_t = time.time()
@@ -429,11 +436,11 @@ class SiaLPRelaxedPJADMM(SiaILP):
           # gpu_cnstr_viol = bvec - jax.device_put(gpu_slacks_k, jax.devices()[0]) - Amat@jax.device_put(job_primals_k.sum(axis=[0, 1]), jax.devices()[0])
           gpu_cnstr_viol_norms, sumto1_cnstr_viol_norms = stats_k['gpu_cnstr_viol_norms'], stats_k['sumto1_cnstr_viol_norms']
           # max_mu = iter_args["solver_viol_beta"] * (self.num_blocks - 1)
-          iter_args["solver_prox_mu"] = jnp.clip(iter_args["solver_prox_mu"] * 2, a_min=50, a_max=min_rho)
+          # iter_args["solver_prox_mu"] = jnp.clip(iter_args["solver_prox_mu"] * 2, a_min=None, a_max=max_rho)
           # iter_args["solver_bin_lambda"] = jnp.clip(iter_args["solver_bin_lambda"] * 1.2, a_min=1e-3, a_max=5)
           # max_beta = 5*self.num_jobs / 100
           # max_beta = 1
-          iter_args["solver_viol_beta"] = jnp.clip(iter_args["solver_viol_beta"] * 2, a_min=None, a_max=max_beta)
+          # iter_args["solver_viol_beta"] = jnp.clip(iter_args["solver_viol_beta"] * 2, a_min=None, a_max=max_beta)
 
           # iter_args["solver_viol_beta"] = iter_args["solver_viol_beta"] * 1.03
           # score convergence based on binarization and job-level constraints
@@ -453,7 +460,7 @@ class SiaLPRelaxedPJADMM(SiaILP):
           if (gpu_cnstr_viol_norms[-1] <= self.solver_tol and sumto1_cnstr_viol_norms[-1] <= self.solver_tol):
             rprint(f"Breaking after {i+1} iterations : gpu_cntr_viol_norm = {gpu_cnstr_viol_norms[-1]}, sumto1_cnstr_viol_norms = {sumto1_cnstr_viol_norms[-1]} < tol={self.solver_tol}")
             has_solver_converged = True
-            num_converged.append((num_converged[-1][0] + self.num_jobs, i))
+            early_bound_stats.append((early_bound_stats[-1][0] + self.num_jobs, i, early_bound_stats[-1][2] + stats_k['obj_vals'][-1] * obj_scale_factor))
             break
           else:
             # rprint(f"Job primals shape: {job_primals_k.shape}, gpu_duals shape: {gpu_duals_k.shape}, gpu_slacks shape: {gpu_slacks_k.shape}, job_slacks shape: {job_slacks_k.shape}")
@@ -466,12 +473,13 @@ class SiaLPRelaxedPJADMM(SiaILP):
           can_early_bind = (remaining_jobs <= self.num_jobs / self.solver_block_size_scale_factor) and (gpu_cnstr_viol_norms[-1] < 10*self.solver_tol) and (bind_len > 0)
           # early bind values for converged jobs
           if can_early_bind:
+            reconfigure_start_t = time.time()
             opt_state = (job_primals_k, job_slacks_k, job_duals_k, gpu_duals_k, gpu_slacks_k)
             params = (vmapped_cmat, Amat, bvec, primal_bounds)
             bound_idxs = converged_idxs[:bind_len]
             opt_state, params, converged_idxs = jax.device_put((opt_state, params, bound_idxs), Amat.sharding)
             constants = (iter_args["solver_viol_beta"], iter_args["solver_prox_mu"], iter_args["solver_bin_lambda"])
-            opt_state, params = self.__early_bind_jobs(opt_state, params, converged_idxs)
+            opt_state, params, early_bound_objval = self.__early_bind_jobs(opt_state, params, converged_idxs)
             job_primals_k, job_slacks_k, job_duals_k, gpu_duals_k, gpu_slacks_k = opt_state
             vmapped_cmat, Amat, bvec, primal_bounds = params
             # re-initialize subproblem solver
@@ -481,7 +489,7 @@ class SiaLPRelaxedPJADMM(SiaILP):
             # update other loop variables
             final_loop_state = (job_primals_k, gpu_duals_k, gpu_slacks_k, job_slacks_k, job_duals_k,
                                 vmapped_subproblem_state, other_state, stats_k)
-            num_converged.append((num_converged[-1][0] + bind_len, i))
+            early_bound_stats.append((early_bound_stats[-1][0] + bind_len, i, early_bound_stats[-1][2] + early_bound_objval * obj_scale_factor))
             # update problem args
             problem_args["Amat"] = Amat
             problem_args["bvec"] = bvec
@@ -489,11 +497,9 @@ class SiaLPRelaxedPJADMM(SiaILP):
             problem_args["job_primal_bounds"] = primal_bounds
             problem_args["cnstr_scale_factor"] = cnstr_scale_factor
             problem_args["obj_scale_factor"] = obj_scale_factor
-            # iter_args["solver_prox_mu"] = iter_args["solver_prox_mu"] / 2
-            # max_beta = 5*self.num_jobs / 100
-            # max_beta = 1
-            iter_args["solver_viol_beta"] = jnp.clip(iter_args["solver_viol_beta"] * 2, a_min=None, a_max=max_beta)
             previous_iter_vals = (job_primals_k, gpu_duals_k, gpu_slacks_k, job_slacks_k, job_duals_k)
+            reconfigure_end_t = time.time()
+            reconfigure_time_ms += (reconfigure_end_t - reconfigure_start_t) * 1000
       
     jax.block_until_ready(final_loop_state)
     solve_end_t = time.time()
@@ -503,20 +509,13 @@ class SiaLPRelaxedPJADMM(SiaILP):
 
     for k in track_stats.keys():
       track_stats[k] = np.array(track_stats[k])
-    if False:
-      prefix = "/home/sauce/data/solvers/logs/pjadmm_param_sweep/10kgpu"
-      dump_filename = f"{prefix}/padmmx8_beta{iter_args["solver_viol_beta"]}_mu{iter_args["solver_prox_mu"]}.pkl"
-      with open(dump_filename, "wb") as f:
-        import pickle
-        track_stats["beta"] = float(iter_args["solver_viol_beta"].item())
-        track_stats["prox_mu"] = float(iter_args["solver_prox_mu"].item())
-        track_stats["dual_tau"] = float(self.solver_dual_tau)
-        track_stats["num_jobs"] = len(self.job_utilities)
-        track_stats["num_configs"] = self.num_configs
-        track_stats["num_blocks"] = self.solver_target_num_blocks
-        track_stats["early_bound"] = num_converged
-        rprint(f"Dumping solver stats to {dump_filename} for further analysis")
-        pickle.dump(track_stats, f)
+    track_stats["beta"] = float(iter_args["solver_viol_beta"])
+    track_stats["prox_mu"] = float(iter_args["solver_prox_mu"])
+    track_stats["dual_tau"] = float(self.solver_dual_tau)
+    track_stats["num_jobs"] = len(self.job_utilities)
+    track_stats["num_configs"] = self.num_configs
+    track_stats["num_blocks"] = self.solver_target_num_blocks
+    track_stats["early_bound"] = early_bound_stats
     num_iters = len(iter_times_ms)
     rprint(f"Prox-Jacobi-ADMM: finished {num_iters} iterations in {(solve_end_t - solve_start_t)*1000:.2f} ms")
     job_primals = np.squeeze(np.array(job_primals_k.reshape(-1, self.num_configs))).round(2)
@@ -529,8 +528,8 @@ class SiaLPRelaxedPJADMM(SiaILP):
 
     if self.solver_normalize_cnstrs:
       gpu_slacks = gpu_slacks * cnstr_scale_factor
-    setup_time_ms = (solve_start_t - setup_start_t)*1000
-    solve_time_ms = (solve_end_t - solve_start_t)*1000
+    setup_time_ms = (solve_start_t - setup_start_t)*1000 + reconfigure_time_ms
+    solve_time_ms = (solve_end_t - solve_start_t)*1000 - reconfigure_time_ms
     total_runtime = (solve_end_t - setup_start_t)*1000
     rprint(f"Solver timings: setup={setup_time_ms:.2f}ms, solve={solve_time_ms:.2f}ms, total={total_runtime:.2f}ms")
 
@@ -540,7 +539,8 @@ class SiaLPRelaxedPJADMM(SiaILP):
     # persist allocs
     stat = {"time": self.current_time, "num_jobs": self.num_jobs, "num_vars": self.num_jobs*self.num_configs, 
             "setup_time_ms": setup_time_ms, "solve_time_ms": solve_time_ms, 
-            "solver_status": str(has_solver_converged), "objective_val": track_stats["obj_vals"][-1]}
+            "solver_status": str(has_solver_converged), "objective_val": track_stats["obj_vals"][-1],
+            "track_stats": track_stats}
     return stat, has_solver_converged
 
   def get_save_state(self):

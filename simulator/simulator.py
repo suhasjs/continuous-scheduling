@@ -34,6 +34,8 @@ argparser.add_argument('--disable-status', action='store_true', help='Whether to
 argparser.add_argument('--checkpoint-frequency', type=int, help='How frequently (in #rounds) to checkpoint the simulator state to the output-log file', default=10)
 argparser.add_argument('--load-checkpoint', action='store_true', help='Whether to load checkpoint from output-log file [default=False]')
 argparser.add_argument('--simulate-scheduler-delay', action='store_true', help='Whether to include scheduler latency in simulation: if True, the simulator will incorporate scheduler latency to next round duration [default: False]')
+argparser.add_argument('--pjadmm_viol_beta', type=float, default=0.1, help='Penalty parameter for the Proximal Jacobi ADMM solver')
+argparser.add_argument('--pjadmm_prox_mu', type=float, default=1e-2, help='Proximal parameter for the Proximal Jacobi ADMM solver')
 
 # parse args
 args = argparser.parse_args()
@@ -105,6 +107,7 @@ if policy == 'sia-ilp':
 elif policy == 'sia-lp-relaxed':
   policy = SiaLPRelaxed(cluster_nnodes, cluster_ngpus_per_node, sia_policy_options, sia_solver_options)
 elif policy == 'sia-lp-relaxed-pjadmm':
+  sia_solver_options.update({'viol_beta': args.pjadmm_viol_beta, 'prox_mu': args.pjadmm_prox_mu})
   policy = SiaLPRelaxedPJADMM(cluster_nnodes, cluster_ngpus_per_node, sia_policy_options, sia_solver_options)
 else:
   raise ValueError(f"Policy {policy} not supported")
