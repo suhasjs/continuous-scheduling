@@ -6,6 +6,7 @@ import numpy as np
 from rich import print as rprint
 import time
 
+
 class SiaLPRelaxed(SiaILP):
   def __init__(self, num_nodes, ngpus_per_node, policy_options, solver_options):
     # cluster configuration
@@ -47,6 +48,15 @@ class SiaLPRelaxed(SiaILP):
 
     # rounding functions to convert fractional allocations to integer allocations
     self.round_allocations = round_allocations_largest
+
+    # record programs for offline playback (external)
+    # use standard form:
+    # min c^T x
+    # s.t. Ax <= b
+    #      x >= 0
+    # store: (A, b, c, x_opt, obj_val, status, time, num_jobs, num_configs, job ordering)
+    self.record_programs = solver_options.get('record_programs', False)
+    self.recorded_programs = []
 
   def get_save_state(self):
     state = super().get_save_state()
@@ -128,6 +138,33 @@ class SiaLPRelaxed(SiaILP):
       allocX.value = warm_start_allocs
     prob.solve(solver=cp_solver, warm_start=self.warm_start, **self.solver_options)
     solve_end = time.time()
+
+    # check if program needs to be recorded
+    if self.record_programs:
+      rprint(f"[yellow]Recording LP program for offline playback...[/yellow]")
+      # create standard form
+      num_vars = num_jobs * num_configs
+      num_cnstrs = num_jobs + self.num_gputypes
+      stdA = np.zeros((num_cnstrs, num_vars))
+      stdb = np.ones(num_cnstrs)
+      for i in range(num_jobs):
+        span_start, span_end = i*num_configs, (i+1)*num_configs
+        stdA[:self.num_gputypes, span_start:span_end] = self.config_cnstr_matrix
+        stdb[:self.num_gputypes] = self.max_ngpus
+        stdA[self.num_gputypes + i, span_start:span_end] = 1
+      stdc = -1 * (cost_matrix.flatten() + self.lambda_no_alloc)
+      ret_x = allocX.value.flatten()
+      ret_obj_val = prob.value
+      ret_status = prob.status
+      solver_time = (solve_end - setup_start)
+      stdform_program = {
+        "A": stdA, "b": stdb, "c": stdc, "num_jobs": num_jobs, "num_configs": num_configs,
+        "job_ordering": job_ordering, "time": self.current_time, "solver": self.solver_name, 
+        "solver_options": self.solver_options, "x_opt": ret_x, "obj_opt": ret_obj_val, "solver_status": ret_status, 
+        "solver_time_ms": solver_time * 1000
+      }
+      self.recorded_programs.append(stdform_program)
+
     if prob.status != cp.OPTIMAL:
       rprint(f"ERROR :: LP did not converge to optimal solution; returning previous solution")
       rprint(f"Solver status: {prob.status}, exited after {(solve_end - solve_start):.2f} seconds")

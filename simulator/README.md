@@ -15,5 +15,6 @@ python simulator.py --job-trace workloads/40kjobs_24hrs_pai/workload-1.csv --rou
 - `--simulator-timeout` --> Stops simulation after a certain number of rounds. Don't need to set this if you want to run the trace to completion
 - `--debug` --> Set this flag to run the simulator in debug mode. This will print additional information about the simulation and will stop and wait for user-input after each round. Use to inspect round-by-round behavior of the simulator
 - `--disable-status` --> Disables printing detailed per-job information in each round. Instead, will only print aggregate info about number of jobs and resources in the cluster. Use to suppress clutter for large experiments
+- `--program-dump` --> Dumps all programs (and found optimal `x` and `f(x)`) to a file specified by this arg (don't set if you don't need this). Programs are dumped in standard form: `min c^T x` s.t. `Ax <= b`, `x >= 0`. Each program contains the following keys: `['A', 'b', 'c', 'num_jobs', 'num_configs', 'job_ordering', 'time', 'solver', 'solver_options', 'x_opt', 'obj_opt', 'solver_status', 'solver_time_ms']`.
 
 For other options, run `python simulator.py --help`.

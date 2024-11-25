@@ -36,6 +36,7 @@ argparser.add_argument('--load-checkpoint', action='store_true', help='Whether t
 argparser.add_argument('--simulate-scheduler-delay', action='store_true', help='Whether to include scheduler latency in simulation: if True, the simulator will incorporate scheduler latency to next round duration [default: False]')
 argparser.add_argument('--pjadmm_viol_beta', type=float, default=0.1, help='Penalty parameter for the Proximal Jacobi ADMM solver')
 argparser.add_argument('--pjadmm_prox_mu', type=float, default=1e-2, help='Proximal parameter for the Proximal Jacobi ADMM solver')
+argparser.add_argument('--program-dump', type=str, default=None, help='Path to dump programs to [default=None for no dump]. Use this to dump the LP/MIP programs to a file for offline solving. Only supported for --policy=sia-lp-relaxed')
 
 # parse args
 args = argparser.parse_args()
@@ -105,6 +106,8 @@ rprint(f"Policy solver options: {sia_solver_options}")
 if policy == 'sia-ilp':
   policy = SiaILP(cluster_nnodes, cluster_ngpus_per_node, sia_policy_options, sia_solver_options)
 elif policy == 'sia-lp-relaxed':
+  if args.program_dump is not None:
+    sia_solver_options['record_programs'] = True
   policy = SiaLPRelaxed(cluster_nnodes, cluster_ngpus_per_node, sia_policy_options, sia_solver_options)
 elif policy == 'sia-lp-relaxed-pjadmm':
   sia_solver_options.update({'viol_beta': args.pjadmm_viol_beta, 'prox_mu': args.pjadmm_prox_mu})
@@ -238,3 +241,9 @@ if args.output_log is not None:
     dump_dict = {"solver_stats": policy.solver_stats, "jcts": event_recorder.job_completions}
     pickle.dump(dump_dict, f)
   rprint(f"[green]Saving simulation stats to {logfile_name} at round {round_num}[/green]")
+
+if args.program_dump is not None and args.policy == 'sia-lp-relaxed':
+  dump_file = args.program_dump
+  with open(dump_file, 'wb') as f:
+    pickle.dump(policy.recorded_programs, f)
+  rprint(f"[green]Dumped LPs seen to {dump_file}[/green]")
