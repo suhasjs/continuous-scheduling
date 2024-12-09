@@ -54,9 +54,22 @@ class SiaLPRelaxed(SiaILP):
     # min c^T x
     # s.t. Ax <= b
     #      x >= 0
-    # store: (A, b, c, x_opt, obj_val, status, time, num_jobs, num_configs, job ordering)
+    # OLD -> store: (A, b, c, x_opt, obj_val, status, time, num_jobs, num_configs, job ordering)
+    # NEW -> store: (c, x_opt, obj_val, status, time, num_jobs, job_ordering)
+    #     -> meta: (self.config_cnstr_matrix, self.max_ngpus, self.cluster_ordering)
     self.record_programs = solver_options.get('record_programs', False)
     self.recorded_programs = []
+  
+  def get_program_dump(self):
+    program_meta = {"config_cnstr_matrix": self.config_cnstr_matrix, 
+                    "max_ngpus": self.max_ngpus, 
+                    "cluster_ordering": self.cluster_ordering
+    }
+    dump = {
+      "meta" : program_meta,
+      "programs": self.recorded_programs
+    }
+    return dump
 
   def get_save_state(self):
     state = super().get_save_state()
@@ -142,28 +155,19 @@ class SiaLPRelaxed(SiaILP):
     # check if program needs to be recorded
     if self.record_programs:
       rprint(f"[yellow]Recording LP program for offline playback...[/yellow]")
-      # create standard form
-      num_vars = num_jobs * num_configs
-      num_cnstrs = num_jobs + self.num_gputypes
-      stdA = np.zeros((num_cnstrs, num_vars))
-      stdb = np.ones(num_cnstrs)
-      for i in range(num_jobs):
-        span_start, span_end = i*num_configs, (i+1)*num_configs
-        stdA[:self.num_gputypes, span_start:span_end] = self.config_cnstr_matrix
-        stdb[:self.num_gputypes] = self.max_ngpus
-        stdA[self.num_gputypes + i, span_start:span_end] = 1
+      # create inputs to standard form (except A, b --> constructed in sparse form when needed)
       stdc = -1 * (cost_matrix.flatten() + self.lambda_no_alloc)
       ret_x = allocX.value.flatten()
       ret_obj_val = prob.value
       ret_status = prob.status
       solver_time = (solve_end - setup_start)
-      stdform_program = {
-        "A": stdA, "b": stdb, "c": stdc, "num_jobs": num_jobs, "num_configs": num_configs,
+      stdform_inputs = {
+        "c": stdc, "num_jobs": num_jobs, "num_configs": num_configs,
         "job_ordering": job_ordering, "time": self.current_time, "solver": self.solver_name, 
         "solver_options": self.solver_options, "x_opt": ret_x, "obj_opt": ret_obj_val, "solver_status": ret_status, 
         "solver_time_ms": solver_time * 1000
       }
-      self.recorded_programs.append(stdform_program)
+      self.recorded_programs.append(stdform_inputs)
 
     if prob.status != cp.OPTIMAL:
       rprint(f"ERROR :: LP did not converge to optimal solution; returning previous solution")

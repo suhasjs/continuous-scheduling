@@ -1,6 +1,6 @@
 from policies.sia_ilp import SiaILP
 from policies.sia_lp_relaxed import SiaLPRelaxed
-from policies.sia_lp_relaxed_pjadmm import SiaLPRelaxedPJADMM
+# from policies.sia_lp_relaxed_pjadmm import SiaLPRelaxedPJADMM
 from jobs.job import JobStatus
 from jobs.sia_job import get_sia_job_classes, SiaJob
 from jobs.batch_inference_job import get_batch_inference_job_classes, BatchInferenceJob
@@ -245,5 +245,5 @@ if args.output_log is not None:
 if args.program_dump is not None and args.policy == 'sia-lp-relaxed':
   dump_file = args.program_dump
   with open(dump_file, 'wb') as f:
-    pickle.dump(policy.recorded_programs, f)
+    pickle.dump(policy.get_program_dump(), f)
   rprint(f"[green]Dumped LPs seen to {dump_file}[/green]")
