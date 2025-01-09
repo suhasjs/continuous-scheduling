@@ -196,7 +196,7 @@ class SiaLPRelaxedALCD(SiaILP):
       return self.allocations
     else:
       rprint(f"Problem size: {num_jobs}x{num_configs}={num_jobs*num_configs/1000:.1f}k vars, solver time: {total_time*1000:.2f} ms, optimal value: {ret_info['final_primal_obj']:.2f}")
-      rprint(f"\t Setup: {program_init_time*1000:.2f} ms, Solve: {program_solve_time*1000:.2f} ms")
+      rprint(f"\t Load/Compile: {program_load_time*1000:.2f}ms, Init: {program_init_time*1000:.2f} ms, Solve: {program_solve_time*1000:.2f} ms")
 
     # extract allocations
     allocs = allocX.round(3)
