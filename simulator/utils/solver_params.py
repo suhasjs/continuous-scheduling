@@ -44,6 +44,8 @@ def get_solver_params(solver_name, time_limit=None, rtol=None, mipgap=None, verb
     options = {'eps_rel': rtol}
   elif solver_name == "PJADMM":
     options = {'tol': rtol}
+  elif solver_name == "ALCD":
+    options = {'tol': rtol}
   else:
     raise ValueError(f"Solver {solver_name} not supported")
   return options

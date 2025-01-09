@@ -1,0 +1,256 @@
+from .policy import AbstractPolicy
+from .sia_ilp import SiaILP
+from .policy_utils import round_allocations_largest
+import pylpsparse as lps
+import cvxpy as cp
+import numpy as np
+from rich import print as rprint
+import time
+
+
+class SiaLPRelaxedALCD(SiaILP):
+  def __init__(self, num_nodes, ngpus_per_node, policy_options, solver_options):
+    # cluster configuration
+    self.num_nodes = num_nodes
+    self.ngpus_per_node = ngpus_per_node
+    self.cluster_ordering = sorted(list(num_nodes.keys()))
+    self.num_gputypes = len(self.cluster_ordering)
+    self.cluster_gpus = {cluster: num_nodes[cluster] * ngpus_per_node[cluster] for cluster in self.cluster_ordering}
+    self.max_ngpus = np.asarray([self.cluster_gpus[cluster] for cluster in self.cluster_ordering])
+    self.total_num_gpus = sum(self.cluster_gpus.values())
+
+    # populate configurations
+    self.configs, configs_cnstrs = self._get_configurations()
+    self.config_cnstr_matrix, self.config_cnstr_vec = configs_cnstrs
+
+    # policy parameters
+    self.lambda_no_alloc = policy_options.get('lambda_no_alloc', 1.1)
+    self.p_value = policy_options.get('p_value', 0.5)
+
+    # solver options
+    self.solver_options = solver_options
+    self.solver_tol = self.solver_options.get('tol', 1e-2)
+    lpcfg = lps.LP_Param()
+    lpcfg.solve_from_dual = self.solver_options.get("solve_from_dual", True)
+    lpcfg.eta = self.solver_options.get("alcd_eta", 1.0)
+    lpcfg.verbose = self.solver_options.get("verbose", False)
+    lpcfg.tol = self.solver_tol
+    self.verbose_solver = lpcfg.verbose
+    lpcfg.tol_sub = self.solver_options.get("alcd_tol_sub", 1e-4)
+    lpcfg.tol_trans = self.solver_options.get("alcd_tol_trans", 1e-1)
+    lpcfg.use_CG = not self.solver_options.get("disable_CG", False)
+    self.lpcfg = lpcfg
+    self.warm_start = solver_options.get('warm_start', False)
+    self.solver_options.pop('warm_start', None)
+
+    # cluster state
+    self.active_jobs = {}
+    self.allocations = {}
+    self.job_utilities = {}
+    self.current_time = 0
+
+    # stats
+    self.solver_stats = []
+
+    # rounding functions to convert fractional allocations to integer allocations
+    self.round_allocations = round_allocations_largest
+
+    # record programs for offline playback (external)
+    # use standard form:
+    # min c^T x
+    # s.t. Ax <= b
+    #      x >= 0
+    # OLD -> store: (A, b, c, x_opt, obj_val, status, time, num_jobs, num_configs, job ordering)
+    # NEW -> store: (c, x_opt, obj_val, status, time, num_jobs, job_ordering)
+    #     -> meta: (self.config_cnstr_matrix, self.max_ngpus, self.cluster_ordering)
+    self.record_programs = solver_options.get('record_programs', False)
+    self.recorded_programs = []
+  
+  def get_program_dump(self):
+    program_meta = {"config_cnstr_matrix": self.config_cnstr_matrix, 
+                    "max_ngpus": self.max_ngpus, 
+                    "cluster_ordering": self.cluster_ordering
+    }
+    dump = {
+      "meta" : program_meta,
+      "programs": self.recorded_programs
+    }
+    return dump
+
+  def get_save_state(self):
+    state = super().get_save_state()
+    return state
+  
+  def load_saved_state(self, state, jobs):
+    super().load_saved_state(state, jobs)
+
+  def round_allocations_largest(self, partial_allocations, cluster_free_gpus):
+    # allocate the largest possible config to each job
+    rounded_allocs = {}
+    for jobname, partial_alloc in partial_allocations.items():
+      alloced_gpus = 0
+      for config, weight in partial_alloc:
+        _, ngpus, cluster = config
+        if cluster_free_gpus[cluster] >= ngpus:
+          rounded_allocs[jobname] = config
+          cluster_free_gpus[cluster] -= ngpus
+          alloced_gpus = ngpus
+          break
+      if alloced_gpus == 0:
+        rounded_allocs[jobname] = None
+    return rounded_allocs
+
+  # override optimize_allocations to use LP relaxation of ILP + rounding
+  def optimize_allocations(self):
+    # start setup time 
+    setup_start = time.time()
+    # create inputs to the ILP
+    num_jobs = len(self.active_jobs)
+    if num_jobs == 0:
+      stat = {"time": self.current_time, "num_jobs": 0, "num_vars": 0, "setup_time_ms": 0, "solve_time_ms": 0,
+              "solver_status": "optimal", "objective_val": 0}
+      self.solver_stats.append(stat)
+      return
+    num_configs = len(self.configs)
+    allocX = cp.Variable((num_jobs, num_configs))
+    cost_matrix = np.zeros((num_jobs, num_configs))
+    job_ordering = sorted(list(self.active_jobs.keys()))
+    for i, jobname in enumerate(job_ordering):
+      utilities = np.asarray(self.job_utilities[jobname])
+      cost_matrix[i, :] = utilities
+    # rprint(f"Cost matrix: {cost_matrix}")
+    # rprint(f"Utilities: {self.job_utilities}")
+    # raise cost_matrix to the power of p_value
+    # add a small value to cost_matrix to avoid division by zero
+    if self.p_value < 0:
+      cost_matrix[cost_matrix == 0] = 1e-3
+    cost_matrix = np.power(cost_matrix, self.p_value)
+    cost_matrix[cost_matrix < 1e-2] = -1
+    stdc = -1 * (cost_matrix.flatten() + self.lambda_no_alloc)
+
+    ### Construct ALCD problem
+    program_start_time = time.time()
+    program = {
+      "num_jobs" : num_jobs, "num_configs" : num_configs, "c" : stdc,
+      "job_ordering" : job_ordering, "time" : self.current_time,
+      "cnstrA" : self.config_cnstr_matrix, "cnstrb" : self.config_cnstr_vec,
+      "is_compressed" : True
+    }
+    lpobj = lps.SiaSparseLPFormat(program)
+    primal_args = lpobj.get_primal_alcd_format()
+    dual_lpargs = lpobj.get_dual_alcd_format()
+    program_load_time = time.time() - program_start_time
+
+    A, b, c, nb, nf, m, me = primal_args
+    At = dual_lpargs[0]
+    assert nf == 0, "Free variables not allowed"
+    assert me == 0, "Equality constraints not allowed"
+    x0 = np.zeros(len(c))
+    # w0 = np.zeros(len(b))
+    w0 = -b
+    init_start_time = time.time()
+    if self.lpcfg.solve_from_dual is False:
+      h2jj = np.zeros(nb + nf)
+      hjj_ubound = np.zeros(nb + nf)
+      lps.init_state(x0, w0, h2jj, hjj_ubound, nb, nf, m, me, A, b, c, self.lpcfg.eta) 
+    else:
+      h2jj = np.zeros(m + me)
+      hjj_ubound = np.zeros(m + me)
+      lps.init_state(w0, x0, h2jj, hjj_ubound, m, me, nb, nf, At, c, b, self.lpcfg.eta)
+    # warm-start x0 ?
+    if self.warm_start:
+      x0[:] = self.get_warm_start_guess(job_ordering).flatten()
+    program_init_time = time.time() - init_start_time
+
+    ### 2. Solve the ALCD problem
+    lpinfo = lps.LP_Info()
+    solve_start_time = time.time()
+    lps.solve_alcd(A, b, c, x0, w0, h2jj, hjj_ubound, nb, nf, m, me, self.lpcfg, lpinfo)
+    program_solve_time = time.time() - solve_start_time
+    total_time = time.time() - program_start_time
+
+    ### 3. Extract solution
+    allocX = x0.reshape((num_jobs, num_configs))
+    ret_info = lps.lpinfo_to_dict(lpinfo)
+    program_status = "OPTIMAL" if ret_info["final_primal_inf"] <= self.solver_tol else "INACCURATE"
+    # check if program needs to be recorded
+    if self.record_programs:
+      rprint(f"[yellow]Recording LP program for offline playback...[/yellow]")
+      # create inputs to standard form (except A, b --> constructed in sparse form when needed)
+      ret_x = allocX.flatten()
+      ret_obj_val = ret_info["final_primal_obj"]
+      ret_status = program_status
+      solver_time = total_time
+      stdform_inputs = {
+        "c": stdc, "num_jobs": num_jobs, "num_configs": num_configs,
+        "job_ordering": job_ordering, "time": self.current_time, "solver": "ALCD", 
+        "solver_options": self.solver_options, "x_opt": ret_x, "obj_opt": ret_obj_val, 
+        "solver_status": ret_status, "solver_time_ms": solver_time * 1000, "info": ret_info
+      }
+      self.recorded_programs.append(stdform_inputs)
+
+    if program_status != "OPTIMAL":
+      rprint(f"ERROR :: LP did not converge to optimal solution; returning previous solution")
+      rprint(f"Solver status: {program_status}, exited after {program_solve_time:.2f} seconds.")
+      rprint(f"ALCD Solver returned info: {lpinfo}")
+      return self.allocations
+    else:
+      rprint(f"Problem size: {num_jobs}x{num_configs}={num_jobs*num_configs/1000:.1f}k vars, solver time: {total_time*1000:.2f} ms, optimal value: {ret_info['final_primal_obj']:.2f}")
+      rprint(f"\t Setup: {program_init_time*1000:.2f} ms, Solve: {program_solve_time*1000:.2f} ms")
+
+    # extract allocations
+    allocs = allocX.round(3)
+    alloced_gpus = np.matmul(self.config_cnstr_matrix, np.sum(allocs, axis=0))
+    # violations = np.where(alloced_gpus > self.max_ngpus)[0]
+    # add a 0.1 buffer for floating point errors
+    # assert np.all(alloced_gpus <= (self.max_ngpus + 0.8)), f"GPU allocation exceeds available GPUs: {alloced_gpus} >= {self.max_ngpus}: {alloced_gpus[violations]} > {self.max_ngpus[violations]}"
+    # rprint(f"Allocated GPUs: {alloced_gpus}")
+    cluster_free_gpus = {cluster: cluster_max_gpus for cluster, cluster_max_gpus in zip(self.cluster_ordering, self.max_ngpus)}
+    partial_allocs = {}
+    partial_allocs_obj_val = 0
+    for i, jobname in enumerate(job_ordering):
+      job_alloc = allocs[i, :]
+      # no allocation for this job
+      if np.sum(job_alloc) == 0:
+        self.allocations[jobname] = None
+      # some allocation for this job
+      elif np.abs(np.sum(job_alloc) - 1) < 0.05:
+        # check how many non-zeros in job_alloc
+        nnz_job_alloc = np.count_nonzero(job_alloc)
+        # exactly one config allocated to this job
+        if nnz_job_alloc == 1:
+          job_alloc_idx = np.argmax(job_alloc)
+          alloc_config = self.configs[job_alloc_idx]
+          _, ngpus, cluster = alloc_config
+          cluster_free_gpus[cluster] -= ngpus
+          self.allocations[jobname] = alloc_config
+        else:
+          # partial alloc with >1 configs selected (fractionally)
+          partial_allocs_obj_val += np.dot(job_alloc, c[i * num_configs:(i+1)*num_configs])
+          valid_idxs = np.where(job_alloc > 0)[0]
+          config_weights = job_alloc[job_alloc > 0]
+          config_choices = [self.configs[idx] for idx in valid_idxs]
+          partial_allocs[jobname] = sorted([(x,y) for x,y in zip(config_choices, config_weights)], key=lambda x: x[1], reverse=True)
+      else:
+        rprint(f"[red]ERROR :: Job {jobname} has invalid allocation: {np.sum(job_alloc)}[/red]")
+        self.allocations[jobname] = None
+    if len(partial_allocs) > 0:
+      rprint(f"[yellow]#Partial allocations: {len(partial_allocs)}/{num_jobs}[/yellow]")
+      rounded_allocs = self.round_allocations(partial_allocs, cluster_free_gpus)
+      for k in rounded_allocs.keys():
+        # rprint(f"\tJob: {k}, partial allocation: {partial_allocs[k]} -> rounded allocation: {rounded_allocs[k]}")
+        pass
+      self.allocations.update(rounded_allocs)
+    
+    stat = {"time": self.current_time, "num_jobs": num_jobs, "num_vars": num_jobs*num_configs, 
+            "setup_time_ms": (program_init_time)*1000, "solve_time_ms": (program_solve_time)*1000, 
+            "solver_status": program_status, "objective_val": ret_info["final_primal_obj"], 
+            "num_partial_allocs": len(partial_allocs), "partial_allocs_obj_val": partial_allocs_obj_val}
+    self.solver_stats.append(stat)
+    
+    '''
+    rprint(f"Cluster GPU usage:")
+    for cluster, ngpus in cluster_alloced_gpus.items():
+      assert ngpus <= self.cluster_gpus[cluster], f"GPU type: {cluster} overallocated: allocated={ngpus} > available={self.cluster_gpus[cluster]}"
+      rprint(f"\t{cluster} = {ngpus} / {self.cluster_gpus[cluster]} GPUs ({round(ngpus / self.cluster_gpus[cluster] * 100, 2)}%)")
+    '''
