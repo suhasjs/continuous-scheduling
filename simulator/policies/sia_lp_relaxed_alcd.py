@@ -46,6 +46,7 @@ class SiaLPRelaxedALCD(SiaILP):
     # cluster state
     self.active_jobs = {}
     self.allocations = {}
+    self.raw_allocations = {} # store raw fractional allocations output by ALCD solver
     self.job_utilities = {}
     self.current_time = 0
 
@@ -99,7 +100,21 @@ class SiaLPRelaxedALCD(SiaILP):
       if alloced_gpus == 0:
         rounded_allocs[jobname] = None
     return rounded_allocs
-
+  
+  # override get_warm_start_guess to use raw fractional allocations
+  def get_warm_start_guess(self, job_ordering):
+    num_jobs, num_configs = len(job_ordering), len(self.configs)
+    warm_start_allocs = np.zeros((num_jobs, num_configs))
+    for i, jobname in enumerate(job_ordering):
+      # get current allocation
+      cur_alloc = self.raw_allocations.get(jobname, None)
+      # zero allocation if current allocation is None
+      if cur_alloc is None:
+        continue
+      else:
+        warm_start_allocs[i, :] = cur_alloc
+    return warm_start_allocs
+  
   # override optimize_allocations to use LP relaxation of ILP + rounding
   def optimize_allocations(self):
     # start setup time 
@@ -160,6 +175,7 @@ class SiaLPRelaxedALCD(SiaILP):
     # warm-start x0 ?
     if self.warm_start:
       x0[:] = self.get_warm_start_guess(job_ordering).flatten()
+    x0copy = np.copy(x0)
     program_init_time = time.time() - init_start_time
 
     ### 2. Solve the ALCD problem
@@ -181,8 +197,14 @@ class SiaLPRelaxedALCD(SiaILP):
 
     ### 3. Extract solution
     allocX = x0.reshape((num_jobs, num_configs))
+    # store raw fractional allocations for warm-start
+    self.raw_allocations.clear()
+    for i, jobname in enumerate(job_ordering):
+      self.raw_allocations[jobname] = np.array(allocX[i, :])
     ret_info = lps.lpinfo_to_dict(lpinfo)
     program_status = "OPTIMAL" if ret_info["final_primal_inf"] <= self.solver_tol else "INACCURATE"
+    path_length_taken_rel = np.linalg.norm(x0 - x0copy, ord=1) / np.linalg.norm(x0, ord=1)
+    ret_info["path_length_taken_rel"] = path_length_taken_rel
     # check if program needs to be recorded
     if self.record_programs:
       rprint(f"[yellow]Recording LP program for offline playback...[/yellow]")
@@ -206,7 +228,7 @@ class SiaLPRelaxedALCD(SiaILP):
       return self.allocations
     else:
       rprint(f"Problem size: {num_jobs}x{num_configs}={num_jobs*num_configs/1000:.1f}k vars, solver time: {total_time*1000:.2f} ms, optimal value: {ret_info['final_primal_obj']:.2f}")
-      rprint(f"\t Load/Compile: {program_load_time*1000:.2f}ms, Init: {program_init_time*1000:.2f} ms, Solve: {program_solve_time*1000:.2f} ms")
+      rprint(f"\t Load/Compile: {program_load_time*1000:.2f}ms, Init: {program_init_time*1000:.2f} ms, Solve: {program_solve_time*1000:.2f} ms, Path Length (rel): {path_length_taken_rel:.2f}")
 
     # extract allocations
     allocs = allocX.round(3)
