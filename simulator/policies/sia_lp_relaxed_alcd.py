@@ -164,8 +164,18 @@ class SiaLPRelaxedALCD(SiaILP):
 
     ### 2. Solve the ALCD problem
     lpinfo = lps.LP_Info()
+    # make a copy of LP_Param object since it is modified in-place inside cpp solver code
+    new_lpcfg = lps.LP_Param()
+    new_lpcfg.solve_from_dual = self.lpcfg.solve_from_dual
+    new_lpcfg.eta = self.lpcfg.eta
+    new_lpcfg.verbose = self.lpcfg.verbose
+    new_lpcfg.tol = self.lpcfg.tol
+    new_lpcfg.tol_sub = self.lpcfg.tol_sub
+    new_lpcfg.tol_trans = self.lpcfg.tol_trans
+    new_lpcfg.use_CG = self.lpcfg.use_CG
     solve_start_time = time.time()
-    lps.solve_alcd(A, b, c, x0, w0, h2jj, hjj_ubound, nb, nf, m, me, self.lpcfg, lpinfo)
+    rprint(f"[yellow]Solving ALCD problem with eta={new_lpcfg.eta}[/yellow]")
+    lps.solve_alcd(A, b, c, x0, w0, h2jj, hjj_ubound, nb, nf, m, me, new_lpcfg, lpinfo)
     program_solve_time = time.time() - solve_start_time
     total_time = time.time() - program_start_time
 
