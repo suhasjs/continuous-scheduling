@@ -118,6 +118,7 @@ class SyntheticSinglePhaseJob(AbstractJob):
     realloc_factor = self.run_time / (self.time + self.jobclass.restart_penalty)
     if self.status == JobStatus.REALLOCATING:
       realloc_factor = 0
+    # print(f"Job: {self.name} --> realloc_factor: {realloc_factor}")
     for i in range(len(utilities)):
       if candidate_allocations[i] != self.allocation:
         utilities[i] *= realloc_factor
@@ -182,6 +183,7 @@ class SyntheticSinglePhaseJob(AbstractJob):
     # rprint(f"Throughput: {throughput}, added progress: {added_progress}")
     self.progress += added_progress
     self.time += round(added_progress / throughput)
+    self.run_time += round(added_progress / throughput)
 
     # check if job is completed
     if self.progress >= self.max_progress:

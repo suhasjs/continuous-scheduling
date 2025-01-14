@@ -17,7 +17,7 @@ class BatchInferenceJobClass:
     self.max_progress = self.profiles["num_iters"]
     # TODO :: make this a configurable parameter
     # setting to 16 to not let it take up all GPUs
-    self.max_scale_units = 32
+    self.max_scale_units = 16
     self.speedup = self.profiles["sim_speedup"]
     self.restart_penalty = 90
 
@@ -97,6 +97,7 @@ class BatchInferenceJob(AbstractJob):
     realloc_factor = self.run_time / (self.run_time + self.jobclass.restart_penalty)
     if self.status == JobStatus.REALLOCATING:
       realloc_factor = 0
+    # print(f"Job: {self.name} --> realloc_factor: {realloc_factor}")
     for i in range(len(utilities)):
       if candidate_allocations[i] != self.allocation:
         utilities[i] *= realloc_factor
@@ -160,6 +161,7 @@ class BatchInferenceJob(AbstractJob):
     added_progress = min(added_progress, max_added_progress)
     # rprint(f"Throughput: {throughput}, added progress: {added_progress}")
     self.progress += added_progress
+    self.run_time += round(added_progress / throughput)
     self.time += round(added_progress / throughput)
 
     # check if job is completed

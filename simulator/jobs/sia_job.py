@@ -162,6 +162,7 @@ class SiaJob(AbstractJob):
     # if job is currently reallocating, penalize re-allocations
     if self.status == JobStatus.REALLOCATING:
       realloc_factor = 0
+    # print(f"Job: {self.name} --> realloc_factor: {realloc_factor}")
     # penalize all utilities by realloc_factor to encourage job to stay on current allocation
     # rprint(f"Job {self.name}, time: {self.time}, realloc_time: {self.realloc_time}, realloc_factor: {realloc_factor}")
     for i in range(len(utilities)):
