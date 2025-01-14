@@ -24,6 +24,7 @@ class SyntheticSinglePhaseJobClass:
       self.profiles = pickle.load(f)
 
     self.max_num_gpus = 128
+    self.restart_penalty = 90
     
     self.max_progress = self.profiles["max_progress"]
     self.goodputs = self.profiles["goodputs"]
@@ -89,18 +90,37 @@ class SyntheticSinglePhaseJob(AbstractJob):
     self.jobclass = jobclass
     self.max_progress = jobclass.max_progress
     self.events.append((self.time, self.progress, self.status, None))
+    self.realloc_countdown = 0
+    # total time spent reallocating across all reallocs
+    self.realloc_time = 0
+    self.num_restarts = 0
+    self.run_time = 0
   
   def get_save_state(self):
     state = super().get_save_state()
     state["jobclass"] = self.jobclass.model_name
+    state["realloc_countdown"] = self.realloc_countdown
+    state["realloc_time"] = self.realloc_time
+    state["num_restarts"] = self.num_restarts
+    state["run_time"] = self.run_time
     return state
   
   def load_saved_state(self, state):
     assert self.jobclass.model_name == state["jobclass"], f"Job class mismatch: {self.jobclass.model_name} != {state['jobclass']}"
     super().load_saved_state(state)
+    self.realloc_countdown = state["realloc_countdown"]
+    self.realloc_time = state["realloc_time"]
+    self.num_restarts = state["num_restarts"]
+    self.run_time = state["run_time"]
   
   def evaluate_allocations(self, candidate_allocations):
     utilities = self.jobclass.evaluate_allocations(candidate_allocations)
+    realloc_factor = self.run_time / (self.time + self.jobclass.restart_penalty)
+    if self.status == JobStatus.REALLOCATING:
+      realloc_factor = 0
+    for i in range(len(utilities)):
+      if candidate_allocations[i] != self.allocation:
+        utilities[i] *= realloc_factor
     # rprint(f"Job: {self.name}, utilities: {list(zip(candidate_allocations, utilities))}")
     return utilities
   
@@ -114,10 +134,11 @@ class SyntheticSinglePhaseJob(AbstractJob):
       self.status = JobStatus.RUNNING
     elif new_allocation is not None:
       self.allocation = new_allocation
-      self.status = JobStatus.RUNNING
+      self.realloc_countdown = self.jobclass.restart_penalty
+      self.status = JobStatus.REALLOCATING
       self.events.append((self.time, self.progress, self.status, self.allocation))
     else:
-      self.allocation = new_allocation
+      self.allocation = None
       self.status = JobStatus.QUEUED
       self.events.append((self.time, self.progress, self.status, None))
 
@@ -127,17 +148,36 @@ class SyntheticSinglePhaseJob(AbstractJob):
       self.progress += 0
       return
     
+    seconds_left = seconds
+    if self.status == JobStatus.REALLOCATING:
+      # job is reallocating
+      subtract_time = min(self.realloc_countdown, seconds)
+      self.realloc_countdown -= subtract_time
+      self.time += subtract_time
+      seconds_left -= subtract_time
+      if self.realloc_countdown == 0:
+        # reallocation complete ==> transition to running
+        self.status = JobStatus.RUNNING
+        self.realloc_time += self.jobclass.restart_penalty
+        self.num_restarts += 1
+        self.events.append((self.time, self.progress, self.status, self.allocation))
+    
+    # no time left to make progress
+    if seconds_left == 0:
+      return
+
     ### self.allocation is not None ###
     # get rate of progress
     throughput = self.jobclass.get_throughput(self.allocation)
     if throughput == 0:
       rprint(f"[yellow] Job {self.name} has 0 throughput with allocation {self.allocation}; simulating 0 progress")
-      self.time += seconds
-      self.queue_time += seconds
+      self.time += seconds_left
+      self.queue_time += seconds_left
       return
+    
     # update progress
     max_added_progress = self.max_progress - self.progress
-    added_progress = throughput * seconds
+    added_progress = throughput * seconds_left
     added_progress = min(added_progress, max_added_progress)
     # rprint(f"Throughput: {throughput}, added progress: {added_progress}")
     self.progress += added_progress

@@ -67,7 +67,8 @@ class SiaLPRelaxed(SiaILP):
     }
     dump = {
       "meta" : program_meta,
-      "programs": self.recorded_programs
+      "programs": self.recorded_programs,
+      "solver_stats": self.solver_stats
     }
     return dump
 

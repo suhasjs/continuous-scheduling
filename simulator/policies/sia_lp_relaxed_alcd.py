@@ -32,16 +32,16 @@ class SiaLPRelaxedALCD(SiaILP):
     self.solver_tol = self.solver_options.get('tol', 1e-2)
     lpcfg = lps.LP_Param()
     lpcfg.solve_from_dual = self.solver_options.get("solve_from_dual", True)
-    lpcfg.eta = self.solver_options.get("alcd_eta", 1.0)
+    lpcfg.eta = self.solver_options.get("alcd_eta", 1)
     lpcfg.verbose = self.solver_options.get("verbose", False)
     lpcfg.tol = self.solver_tol
     self.verbose_solver = lpcfg.verbose
-    lpcfg.tol_sub = self.solver_options.get("alcd_tol_sub", 1e-4)
-    lpcfg.tol_trans = self.solver_options.get("alcd_tol_trans", 1e-1)
+    lpcfg.tol_sub = self.solver_options.get("alcd_tol_sub", 1e-3)
+    lpcfg.tol_trans = self.solver_options.get("alcd_tol_trans", 5e-2)
     lpcfg.use_CG = not self.solver_options.get("disable_CG", False)
     self.lpcfg = lpcfg
     self.warm_start = solver_options.get('warm_start', False)
-    self.warm_start_duals = solver_options.get('warm_start_duals', False)
+    self.warm_start_duals = solver_options.get('warm_start_duals', True)
     self.solver_options.pop('warm_start', None)
 
     # cluster state
@@ -77,7 +77,8 @@ class SiaLPRelaxedALCD(SiaILP):
     }
     dump = {
       "meta" : program_meta,
-      "programs": self.recorded_programs
+      "programs": self.recorded_programs,
+      "solver_stats": self.solver_stats
     }
     return dump
 
@@ -238,7 +239,9 @@ class SiaLPRelaxedALCD(SiaILP):
         "c": stdc, "num_jobs": num_jobs, "num_configs": num_configs,
         "job_ordering": job_ordering, "time": self.current_time, "solver": "ALCD", 
         "solver_options": self.solver_options, "x_opt": ret_x, "obj_opt": ret_obj_val, 
-        "solver_status": ret_status, "solver_time_ms": solver_time * 1000, "info": ret_info
+        "solver_status": ret_status, "solver_time_ms": solver_time * 1000, "info": ret_info,
+        "load_time_ms" : program_load_time * 1000, "init_time_ms": program_init_time * 1000,
+        "solve_time_ms": program_solve_time * 1000
       }
       self.recorded_programs.append(stdform_inputs)
 

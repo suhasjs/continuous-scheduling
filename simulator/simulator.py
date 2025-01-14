@@ -197,7 +197,7 @@ while event_recorder.current_time < simulator_timeout and not all_jobs_complete:
                       "-", str(job.allocation))
       elif is_synthetic_job:
         table.add_row(jobname, "SyntheticSinglePhaseJob", job.status.name, str(round(job.time, 1)), progress_perc, \
-                      "-", str(job.allocation))
+                      str(job.num_restarts), str(job.allocation))
     console = Console()
     console.print(table)
   # print resource consumption
