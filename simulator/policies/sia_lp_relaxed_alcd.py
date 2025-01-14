@@ -41,12 +41,15 @@ class SiaLPRelaxedALCD(SiaILP):
     lpcfg.use_CG = not self.solver_options.get("disable_CG", False)
     self.lpcfg = lpcfg
     self.warm_start = solver_options.get('warm_start', False)
+    self.warm_start_duals = solver_options.get('warm_start_duals', False)
     self.solver_options.pop('warm_start', None)
 
     # cluster state
     self.active_jobs = {}
     self.allocations = {}
     self.raw_allocations = {} # store raw fractional allocations output by ALCD solver
+    self.gpu_duals = {}
+    self.job_duals = {}
     self.job_utilities = {}
     self.current_time = 0
 
@@ -113,7 +116,14 @@ class SiaLPRelaxedALCD(SiaILP):
         continue
       else:
         warm_start_allocs[i, :] = cur_alloc
-    return warm_start_allocs
+
+    warm_start_dual = np.zeros(num_jobs + self.num_gputypes)
+    if self.warm_start_duals:
+      for i, cluster in enumerate(self.cluster_ordering):
+        warm_start_dual[i] = self.gpu_duals.get(cluster, 0)
+      for i, jobname in enumerate(job_ordering):
+        warm_start_dual[self.num_gputypes + i] = self.job_duals.get(jobname, 0)
+    return warm_start_allocs, warm_start_dual
   
   # override optimize_allocations to use LP relaxation of ILP + rounding
   def optimize_allocations(self):
@@ -173,9 +183,15 @@ class SiaLPRelaxedALCD(SiaILP):
       hjj_ubound = np.zeros(m + me)
       lps.init_state(w0, x0, h2jj, hjj_ubound, m, me, nb, nf, At, c, b, self.lpcfg.eta)
     # warm-start x0 ?
+    # if self.warm_start:
+    #   x0[:] = self.get_warm_start_guess(job_ordering).flatten()
     if self.warm_start:
-      x0[:] = self.get_warm_start_guess(job_ordering).flatten()
+      x0_ws, w0_ws = self.get_warm_start_guess(job_ordering)
+      x0[:] = x0_ws.flatten()
+      if self.warm_start_duals:
+        w0[:] = w0_ws
     x0copy = np.copy(x0)
+    w0copy = np.copy(w0)
     program_init_time = time.time() - init_start_time
 
     ### 2. Solve the ALCD problem
@@ -197,6 +213,9 @@ class SiaLPRelaxedALCD(SiaILP):
 
     ### 3. Extract solution
     allocX = x0.reshape((num_jobs, num_configs))
+    # print w in structured_form
+    self.gpu_duals = {cluster: w for cluster, w in zip(self.cluster_ordering, w0[:self.num_gputypes])}
+    self.job_duals = {jobname: w for jobname, w in zip(job_ordering, w0[self.num_gputypes:])}
     # store raw fractional allocations for warm-start
     self.raw_allocations.clear()
     for i, jobname in enumerate(job_ordering):
@@ -204,7 +223,9 @@ class SiaLPRelaxedALCD(SiaILP):
     ret_info = lps.lpinfo_to_dict(lpinfo)
     program_status = "OPTIMAL" if ret_info["final_primal_inf"] <= self.solver_tol else "INACCURATE"
     path_length_taken_rel = np.linalg.norm(x0 - x0copy, ord=1) / np.linalg.norm(x0, ord=1)
+    dual_path_length_taken_rel = np.linalg.norm(w0 - w0copy, ord=1) / np.linalg.norm(w0, ord=1)
     ret_info["path_length_taken_rel"] = path_length_taken_rel
+    ret_info["dual_path_length_taken_rel"] = dual_path_length_taken_rel
     # check if program needs to be recorded
     if self.record_programs:
       rprint(f"[yellow]Recording LP program for offline playback...[/yellow]")
@@ -228,7 +249,7 @@ class SiaLPRelaxedALCD(SiaILP):
       return self.allocations
     else:
       rprint(f"Problem size: {num_jobs}x{num_configs}={num_jobs*num_configs/1000:.1f}k vars, solver time: {total_time*1000:.2f} ms, optimal value: {ret_info['final_primal_obj']:.2f}")
-      rprint(f"\t Load/Compile: {program_load_time*1000:.2f}ms, Init: {program_init_time*1000:.2f} ms, Solve: {program_solve_time*1000:.2f} ms, Path Length (rel): {path_length_taken_rel:.2f}")
+      rprint(f"\t Load/Compile: {program_load_time*1000:.2f}ms, Init: {program_init_time*1000:.2f} ms, Solve: {program_solve_time*1000:.2f} ms, Path Length (rel): {path_length_taken_rel:.2f}, Dual Path Length (rel): {dual_path_length_taken_rel:.2f}")
 
     # extract allocations
     allocs = allocX.round(3)
