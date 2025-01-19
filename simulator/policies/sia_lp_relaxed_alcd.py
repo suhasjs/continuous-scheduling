@@ -43,9 +43,12 @@ class SiaLPRelaxedALCD(SiaILP):
     self.warm_start = solver_options.get('warm_start', False)
     self.warm_start_duals = solver_options.get('warm_start_duals', True)
     self.solver_options.pop('warm_start', None)
+    self.differential_update = solver_options.get('differential_update', False)
+    self.lpobj = None
 
     # cluster state
     self.active_jobs = {}
+    self.job_ordering = []
     self.allocations = {}
     self.raw_allocations = {} # store raw fractional allocations output by ALCD solver
     self.gpu_duals = {}
@@ -105,6 +108,23 @@ class SiaLPRelaxedALCD(SiaILP):
         rounded_allocs[jobname] = None
     return rounded_allocs
   
+  # Ensures consistent ordering across time steps
+  # IF jobA and jobB are present in timesteps t and (t+1), then:
+  #    index(jobA) < index(jobB) at time t => index(jobA) < index(jobB) at time (t+1)
+  # WARNING:: This is required because we do not permute constraint matrix rows in LP solver
+  def get_job_ordering(self):
+    new_job_set = set(self.active_jobs.keys())
+    old_job_ordering = self.job_ordering
+    new_job_ordering = []
+    # preserve ordering of old jobs --> don't shuffle them around
+    for jobname in old_job_ordering:
+      if jobname in new_job_set:
+        new_job_ordering.append(jobname)
+        new_job_set.remove(jobname)
+    # add new jobs to the end of the ordering in sorted order
+    new_job_ordering.extend(sorted(list(new_job_set)))
+    return new_job_ordering
+  
   # override get_warm_start_guess to use raw fractional allocations
   def get_warm_start_guess(self, job_ordering):
     num_jobs, num_configs = len(job_ordering), len(self.configs)
@@ -140,7 +160,7 @@ class SiaLPRelaxedALCD(SiaILP):
     num_configs = len(self.configs)
     allocX = cp.Variable((num_jobs, num_configs))
     cost_matrix = np.zeros((num_jobs, num_configs))
-    job_ordering = sorted(list(self.active_jobs.keys()))
+    job_ordering = self.get_job_ordering()
     for i, jobname in enumerate(job_ordering):
       utilities = np.asarray(self.job_utilities[jobname])
       cost_matrix[i, :] = utilities
@@ -162,7 +182,15 @@ class SiaLPRelaxedALCD(SiaILP):
       "cnstrA" : self.config_cnstr_matrix, "cnstrb" : self.config_cnstr_vec,
       "is_compressed" : True
     }
-    lpobj = lps.SiaSparseLPFormat(program)
+    if self.differential_update:
+      # update existing LP object if exists; else create new LP object
+      if self.lpobj is None:
+        self.lpobj = lps.SiaSparseLPFormat(program)
+      else:
+        self.lpobj.update_program(program, verbose=False)
+      lpobj = self.lpobj
+    else:
+      lpobj = lps.SiaSparseLPFormat(program)
     primal_args = lpobj.get_primal_alcd_format()
     dual_lpargs = lpobj.get_dual_alcd_format()
     program_load_time = time.time() - program_start_time
@@ -244,6 +272,9 @@ class SiaLPRelaxedALCD(SiaILP):
         "solve_time_ms": program_solve_time * 1000
       }
       self.recorded_programs.append(stdform_inputs)
+    
+    # commit new job ordering
+    self.job_ordering = job_ordering
 
     if program_status != "OPTIMAL":
       rprint(f"ERROR :: LP did not converge to optimal solution; returning previous solution")

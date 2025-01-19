@@ -39,6 +39,7 @@ argparser.add_argument('--pjadmm_viol_beta', type=float, default=0.1, help='Pena
 argparser.add_argument('--pjadmm_prox_mu', type=float, default=1e-2, help='Proximal parameter for the Proximal Jacobi ADMM solver')
 argparser.add_argument('--program-dump', type=str, default=None, help='Path to dump programs to [default=None for no dump]. Use this to dump the LP/MIP programs to a file for offline solving. Only supported for --policy=sia-lp-relaxed')
 
+argparser.add_argument('--differential-update', action='store_true', help='Whether to update programs in a differential manner (only ALCD solver can take advantage of this) [default=False]')
 # parse args
 args = argparser.parse_args()
 round_duration = args.round_duration
@@ -50,6 +51,7 @@ solver_timeout = args.solver_timeout
 warm_start_solver = args.warm_start_solver
 verbose_solver = args.verbose_solver
 simulator_timeout = args.simulator_timeout
+differential_update = args.differential_update
 policy = args.policy
 if simulator_timeout < 0:
   simulator_timeout = 1e7
@@ -103,7 +105,6 @@ event_recorder = EventRecorder(jobs, cluster_nnodes, cluster_ngpus_per_node)
 sia_policy_options = {'lambda_no_alloc': 1.1, 'p_value': 0.5}
 sia_solver_options = {'solver': solver_name, 'warm_start': warm_start_solver, 'verbose': verbose_solver}
 sia_solver_options.update(get_solver_params(solver_name=solver_name, time_limit=solver_timeout, rtol=solver_rtol, verbose=verbose_solver))
-rprint(f"Policy solver options: {sia_solver_options}")
 if policy == 'sia-ilp':
   policy = SiaILP(cluster_nnodes, cluster_ngpus_per_node, sia_policy_options, sia_solver_options)
 elif policy == 'sia-lp-relaxed':
@@ -114,10 +115,12 @@ elif policy == 'sia-lp-relaxed-pjadmm':
   sia_solver_options.update({'viol_beta': args.pjadmm_viol_beta, 'prox_mu': args.pjadmm_prox_mu})
   policy = SiaLPRelaxedPJADMM(cluster_nnodes, cluster_ngpus_per_node, sia_policy_options, sia_solver_options)
 elif policy == 'sia-lp-relaxed-alcd':
-  sia_solver_options.update({'record_programs' : args.program_dump is not None})
+  sia_solver_options.update({'record_programs' : args.program_dump is not None,
+                             'differential_update': differential_update})
   policy = SiaLPRelaxedALCD(cluster_nnodes, cluster_ngpus_per_node, sia_policy_options, sia_solver_options)
 else:
   raise ValueError(f"Policy {policy} not supported")
+rprint(f"Policy solver options: {sia_solver_options}")
 
 # load checkpoint if needed
 if args.load_checkpoint and args.output_log is not None:
