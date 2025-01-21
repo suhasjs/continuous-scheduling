@@ -95,6 +95,7 @@ class BatchInferenceJob(AbstractJob):
   def evaluate_allocations(self, candidate_allocations):
     utilities = self.jobclass.evaluate_allocations(candidate_allocations)
     realloc_factor = self.run_time / (self.run_time + self.jobclass.restart_penalty)
+    realloc_factor = 1
     if self.status == JobStatus.REALLOCATING:
       realloc_factor = 0
     # print(f"Job: {self.name} --> realloc_factor: {realloc_factor}")

@@ -116,6 +116,8 @@ class SyntheticSinglePhaseJob(AbstractJob):
   def evaluate_allocations(self, candidate_allocations):
     utilities = self.jobclass.evaluate_allocations(candidate_allocations)
     realloc_factor = self.run_time / (self.time + self.jobclass.restart_penalty)
+    # disable realloc factor --> causing issues with solver for some reason
+    realloc_factor = 1
     if self.status == JobStatus.REALLOCATING:
       realloc_factor = 0
     # print(f"Job: {self.name} --> realloc_factor: {realloc_factor}")
