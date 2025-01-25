@@ -266,7 +266,8 @@ class SiaLPRelaxedALCD(SiaILP):
       stdform_inputs = {
         "c": stdc, "num_jobs": num_jobs, "num_configs": num_configs,
         "job_ordering": job_ordering, "time": self.current_time, "solver": "ALCD", 
-        "solver_options": self.solver_options, "x_opt": ret_x, "obj_opt": ret_obj_val, 
+        "solver_options": self.solver_options, "x_opt": ret_x, "obj_opt": ret_obj_val,
+        "job_duals" : self.job_duals, "gpu_duals" : self.gpu_duals,
         "solver_status": ret_status, "solver_time_ms": solver_time * 1000, "info": ret_info,
         "load_time_ms" : program_load_time * 1000, "init_time_ms": program_init_time * 1000,
         "solve_time_ms": program_solve_time * 1000
@@ -287,10 +288,12 @@ class SiaLPRelaxedALCD(SiaILP):
 
     # extract allocations
     allocs = allocX.round(3)
-    alloced_gpus = np.matmul(self.config_cnstr_matrix, np.sum(allocs, axis=0))
-    # violations = np.where(alloced_gpus > self.max_ngpus)[0]
+    # allocs[np.abs(allocs) < 1e-2] = 0
+    # allocs[np.abs(allocs - 1) < 1e-2] = 1
+    # alloced_gpus = np.matmul(self.config_cnstr_matrix, np.sum(allocs, axis=0))
+    # violations = np.where(alloced_gpus > self.max_ngpus + 0.8)[0]
     # add a 0.1 buffer for floating point errors
-    # assert np.all(alloced_gpus <= (self.max_ngpus + 0.8)), f"GPU allocation exceeds available GPUs: {alloced_gpus} >= {self.max_ngpus}: {alloced_gpus[violations]} > {self.max_ngpus[violations]}"
+    # assert np.all(alloced_gpus <= self.max_ngpus + 0.8), f"GPU allocation exceeds available GPUs: {alloced_gpus} >= {self.max_ngpus}: {alloced_gpus[violations]} > {self.max_ngpus[violations] + 0.8}"
     # rprint(f"Allocated GPUs: {alloced_gpus}")
     cluster_free_gpus = {cluster: cluster_max_gpus for cluster, cluster_max_gpus in zip(self.cluster_ordering, self.max_ngpus)}
     partial_allocs = {}
@@ -304,13 +307,32 @@ class SiaLPRelaxedALCD(SiaILP):
       elif np.abs(np.sum(job_alloc) - 1) < 0.05:
         # check how many non-zeros in job_alloc
         nnz_job_alloc = np.count_nonzero(job_alloc)
-        # exactly one config allocated to this job
+        # at-most one config allocated to this job
         if nnz_job_alloc == 1:
           job_alloc_idx = np.argmax(job_alloc)
           alloc_config = self.configs[job_alloc_idx]
           _, ngpus, cluster = alloc_config
+          solver_ngpus = np.matmul(self.config_cnstr_matrix, job_alloc)
+          solver_ngpus = np.round(solver_ngpus[solver_ngpus > 0][0], 0)
+          if solver_ngpus != ngpus:
+            # alloced fewer than ngpus, but only one config
+            # fix by finding the largest config smaller than ngpus
+            cluster_id = self.cluster_ordering.index(cluster)
+            while (job_alloc_idx > 0 and self.config_cnstr_matrix[cluster_id, job_alloc_idx] > 0):
+              job_alloc_idx -= 1
+              _, new_ngpus, cluster = self.configs[job_alloc_idx]
+              if (new_ngpus <= ngpus):
+                rprint(f"[yellow]WARNING :: Invalid allocation: {solver_ngpus} != {ngpus} --> fixed to {self.configs[job_alloc_idx]}[/yellow]")
+                alloc_config = self.configs[job_alloc_idx]
+                ngpus = new_ngpus
+                break
+            if ngpus > solver_ngpus:
+              rprint(f"[red]ERROR :: Job {jobname} has invalid allocation: {solver_ngpus} != {ngpus}[/red]")
+              ngpus = 0
+              alloc_config = None
           cluster_free_gpus[cluster] -= ngpus
           self.allocations[jobname] = alloc_config
+          # rprint(f"Job: {jobname}, non-zero allocs: {job_alloc[job_alloc > 0]}, alloc:{alloc_config}, expected_alloc: {solver_ngpus[solver_ngpus > 0]}")
         else:
           # partial alloc with >1 configs selected (fractionally)
           partial_allocs_obj_val += np.dot(job_alloc, c[i * num_configs:(i+1)*num_configs])
