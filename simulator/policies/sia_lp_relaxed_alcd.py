@@ -37,7 +37,7 @@ class SiaLPRelaxedALCD(SiaILP):
     lpcfg.tol = self.solver_tol
     self.verbose_solver = lpcfg.verbose
     lpcfg.tol_sub = self.solver_options.get("alcd_tol_sub", 1e-3)
-    lpcfg.tol_trans = self.solver_options.get("alcd_tol_trans", 5e-2)
+    lpcfg.tol_trans = self.solver_options.get("alcd_tol_trans", 0.05)
     lpcfg.use_CG = not self.solver_options.get("disable_CG", False)
     self.lpcfg = lpcfg
     self.warm_start = solver_options.get('warm_start', False)
@@ -263,11 +263,13 @@ class SiaLPRelaxedALCD(SiaILP):
       ret_obj_val = ret_info["final_primal_obj"]
       ret_status = program_status
       solver_time = total_time
+      gpu_duals_array = np.asarray([self.gpu_duals[cluster] for cluster in self.cluster_ordering])
+      job_duals_array = np.asarray([self.job_duals[jobname] for jobname in job_ordering])
       stdform_inputs = {
         "c": stdc, "num_jobs": num_jobs, "num_configs": num_configs,
         "job_ordering": job_ordering, "time": self.current_time, "solver": "ALCD", 
         "solver_options": self.solver_options, "x_opt": ret_x, "obj_opt": ret_obj_val,
-        "job_duals" : self.job_duals, "gpu_duals" : self.gpu_duals,
+        "job_duals" : job_duals_array, "gpu_duals" : gpu_duals_array,
         "solver_status": ret_status, "solver_time_ms": solver_time * 1000, "info": ret_info,
         "load_time_ms" : program_load_time * 1000, "init_time_ms": program_init_time * 1000,
         "solve_time_ms": program_solve_time * 1000
