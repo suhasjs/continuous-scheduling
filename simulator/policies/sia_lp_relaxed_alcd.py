@@ -293,14 +293,15 @@ class SiaLPRelaxedALCD(SiaILP):
       rprint(f"\t Load/Compile: {program_load_time*1000:.2f}ms, Init: {program_init_time*1000:.2f} ms, Solve: {program_solve_time*1000:.2f} ms, Path Length (rel): {path_length_taken_rel:.2f}, Dual Path Length (rel): {dual_path_length_taken_rel:.2f}")
 
     # extract allocations
-    allocs = allocX.round(3)
+    # allocs = allocX.round(3)
+    allocs = allocX
     # allocs[np.abs(allocs) < 1e-2] = 0
     # allocs[np.abs(allocs - 1) < 1e-2] = 1
-    # alloced_gpus = np.matmul(self.config_cnstr_matrix, np.sum(allocs, axis=0))
-    # violations = np.where(alloced_gpus > self.max_ngpus + 0.8)[0]
+    alloced_gpus = np.matmul(self.config_cnstr_matrix, np.sum(allocs, axis=0))
+    violations = np.where(alloced_gpus > self.max_ngpus + 0.5)[0]
     # add a 0.1 buffer for floating point errors
-    # assert np.all(alloced_gpus <= self.max_ngpus + 0.8), f"GPU allocation exceeds available GPUs: {alloced_gpus} >= {self.max_ngpus}: {alloced_gpus[violations]} > {self.max_ngpus[violations] + 0.8}"
-    # rprint(f"Allocated GPUs: {alloced_gpus}")
+    assert np.all(alloced_gpus <= self.max_ngpus + 0.5), f"GPU allocation exceeds available GPUs: {alloced_gpus} >= {self.max_ngpus}: {alloced_gpus[violations]} > {self.max_ngpus[violations] + 0.5}"
+    rprint(f"Allocated GPUs: {alloced_gpus}")
     cluster_free_gpus = {cluster: cluster_max_gpus for cluster, cluster_max_gpus in zip(self.cluster_ordering, self.max_ngpus)}
     partial_allocs = {}
     partial_allocs_obj_val = 0
@@ -336,8 +337,12 @@ class SiaLPRelaxedALCD(SiaILP):
               rprint(f"[red]ERROR :: Job {jobname} has invalid allocation: {solver_ngpus} != {ngpus}[/red]")
               ngpus = 0
               alloc_config = None
-          cluster_free_gpus[cluster] -= ngpus
-          self.allocations[jobname] = alloc_config
+          if cluster_free_gpus[cluster] >= ngpus:
+            cluster_free_gpus[cluster] -= ngpus
+            self.allocations[jobname] = alloc_config
+          else:
+            rprint(f"No enough free GPUs in cluster {cluster} for job {jobname}: {cluster_free_gpus[cluster]} < {ngpus}")
+            self.allocations[jobname] = None
           # rprint(f"Job: {jobname}, non-zero allocs: {job_alloc[job_alloc > 0]}, alloc:{alloc_config}, expected_alloc: {solver_ngpus[solver_ngpus > 0]}")
         else:
           # partial alloc with >1 configs selected (fractionally)
@@ -356,6 +361,7 @@ class SiaLPRelaxedALCD(SiaILP):
         # rprint(f"\tJob: {k}, partial allocation: {partial_allocs[k]} -> rounded allocation: {rounded_allocs[k]}")
         pass
       self.allocations.update(rounded_allocs)
+    rprint(f"Cluster free GPUs: {cluster_free_gpus}")
     
     stat = {"time": self.current_time, "num_jobs": num_jobs, "num_vars": num_jobs*num_configs, 
             "setup_time_ms": (program_init_time)*1000, "solve_time_ms": (program_solve_time)*1000, 
