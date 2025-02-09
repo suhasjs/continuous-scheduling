@@ -39,11 +39,13 @@ class SiaLPRelaxedALCD(SiaILP):
     lpcfg.tol_sub = self.solver_options.get("alcd_tol_sub", 1e-3)
     lpcfg.tol_trans = self.solver_options.get("alcd_tol_trans", 0.05)
     lpcfg.use_CG = not self.solver_options.get("disable_CG", False)
+    lpcfg.inner_max_iter = self.solver_options.get("alcd_inner_max_iters", 1)
     self.lpcfg = lpcfg
     self.warm_start = solver_options.get('warm_start', False)
     self.warm_start_duals = solver_options.get('warm_start_duals', True)
     self.solver_options.pop('warm_start', None)
     self.differential_update = solver_options.get('differential_update', False)
+    self.alcd_job_cnstr_reweight = solver_options.get('alcd_job_cnstr_reweight', 1.0)
     self.lpobj = None
 
     # cluster state
@@ -180,7 +182,7 @@ class SiaLPRelaxedALCD(SiaILP):
       "num_jobs" : num_jobs, "num_configs" : num_configs, "c" : stdc,
       "job_ordering" : job_ordering, "time" : self.current_time,
       "cnstrA" : self.config_cnstr_matrix, "cnstrb" : self.config_cnstr_vec,
-      "is_compressed" : True
+      "is_compressed" : True, "job_cnstr_reweight" : self.alcd_job_cnstr_reweight,
     }
     if self.differential_update:
       # update existing LP object if exists; else create new LP object
@@ -234,6 +236,8 @@ class SiaLPRelaxedALCD(SiaILP):
     new_lpcfg.tol_sub = self.lpcfg.tol_sub
     new_lpcfg.tol_trans = self.lpcfg.tol_trans
     new_lpcfg.use_CG = self.lpcfg.use_CG
+    new_lpcfg.inner_max_iter = self.lpcfg.inner_max_iter
+
     solve_start_time = time.time()
     rprint(f"[yellow]Solving ALCD problem with eta={new_lpcfg.eta}[/yellow]")
     lps.solve_alcd(A, b, c, x0, w0, h2jj, hjj_ubound, nb, nf, m, me, new_lpcfg, lpinfo)

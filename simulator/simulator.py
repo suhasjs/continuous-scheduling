@@ -40,6 +40,9 @@ argparser.add_argument('--pjadmm_prox_mu', type=float, default=1e-2, help='Proxi
 argparser.add_argument('--program-dump', type=str, default=None, help='Path to dump programs to [default=None for no dump]. Use this to dump the LP/MIP programs to a file for offline solving. Only supported for --policy=sia-lp-relaxed')
 
 argparser.add_argument('--differential-update', action='store_true', help='Whether to update programs in a differential manner (only ALCD solver can take advantage of this) [default=False]')
+argparser.add_argument('--alcd-job-cnstr-reweight', type=float, default=1, help='How much to reweight job constraints compared to GPU constraints [only for ALCD solver]')
+argparser.add_argument('--alcd-inner-max-iters', type=int, default=1, help='Max number of RCD/PN iters inside ALCD [only for ALCD solver]')
+
 # parse args
 args = argparser.parse_args()
 round_duration = args.round_duration
@@ -116,7 +119,9 @@ elif policy == 'sia-lp-relaxed-pjadmm':
   policy = SiaLPRelaxedPJADMM(cluster_nnodes, cluster_ngpus_per_node, sia_policy_options, sia_solver_options)
 elif policy == 'sia-lp-relaxed-alcd':
   sia_solver_options.update({'record_programs' : args.program_dump is not None,
-                             'differential_update': differential_update})
+                             'differential_update': differential_update,
+                             'alcd_job_cnstr_reweight': args.alcd_job_cnstr_reweight,
+                             'alcd_inner_max_iters': args.alcd_inner_max_iters})
   policy = SiaLPRelaxedALCD(cluster_nnodes, cluster_ngpus_per_node, sia_policy_options, sia_solver_options)
 else:
   raise ValueError(f"Policy {policy} not supported")
