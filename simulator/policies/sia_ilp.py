@@ -4,6 +4,8 @@ import numpy as np
 from rich import print as rprint
 import time
 
+MAX_NUM_GPUS_IN_CONFIG = 2048
+
 class SiaILP(AbstractPolicy):
   def __init__(self, num_nodes, ngpus_per_node, policy_options, solver_options):
     # cluster configuration
@@ -106,6 +108,8 @@ class SiaILP(AbstractPolicy):
         # grab whole nodes for distributed allocs
           nnodes += 1
           ngpus = nnodes * self.ngpus_per_node[cluster]
+        if ngpus > MAX_NUM_GPUS_IN_CONFIG:
+          break
       rprint(f"\tGPU type: {cluster}, max_ngpus: {max_ngpus}, #configs: {len(config_ngpus[cluster])}")
     # construct constraint matrix
     self.num_configs = len(configs)
