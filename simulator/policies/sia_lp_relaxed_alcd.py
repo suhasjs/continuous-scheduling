@@ -36,8 +36,8 @@ class SiaLPRelaxedALCD(SiaILP):
     lpcfg.verbose = self.solver_options.get("verbose", False)
     lpcfg.tol = self.solver_tol
     self.verbose_solver = lpcfg.verbose
-    lpcfg.tol_sub = self.solver_options.get("alcd_tol_sub", 1e-3)
-    lpcfg.tol_trans = self.solver_options.get("alcd_tol_trans", 0.05)
+    lpcfg.tol_sub = self.solver_options.get("alcd_tol_sub", 1e-1)
+    lpcfg.tol_trans = self.solver_options.get("alcd_tol_trans", 0.1)
     lpcfg.use_CG = not self.solver_options.get("disable_CG", False)
     lpcfg.inner_max_iter = self.solver_options.get("alcd_inner_max_iters", 1)
     self.lpcfg = lpcfg
@@ -240,7 +240,7 @@ class SiaLPRelaxedALCD(SiaILP):
 
     solve_start_time = time.time()
     rprint(f"[yellow]Solving ALCD problem with eta={new_lpcfg.eta}[/yellow]")
-    lps.solve_alcd(A, b, c, x0, w0, h2jj, hjj_ubound, nb, nf, m, me, new_lpcfg, lpinfo)
+    lps.solve_alcd_corrector(A, b, c, x0, w0, h2jj, hjj_ubound, nb, nf, m, me, new_lpcfg, lpinfo)
     program_solve_time = time.time() - solve_start_time
     total_time = time.time() - program_start_time
 
