@@ -1,4 +1,5 @@
 from enum import Enum
+import numpy as np
 
 # Define the JobStatus Enum
 class JobStatus(Enum):
@@ -7,6 +8,8 @@ class JobStatus(Enum):
   RUNNING = 1
   REALLOCATING = 2
   COMPLETED = 3
+
+NOISE_SCALE = 0.01
 
 class AbstractJob:
   def __init__(self, name, submission_time):
@@ -22,6 +25,7 @@ class AbstractJob:
     self.max_progress = None
     self.progress_fns = None
     self.events = []
+    self.noise_multiplier = (1 + ((np.random.rand() - 0.5) * NOISE_SCALE))
   
   def get_save_state(self):
     state = {

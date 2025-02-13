@@ -148,6 +148,8 @@ class SiaJob(AbstractJob):
 
   def evaluate_allocations(self, candidate_allocations):
     utilities = self.job_class.evaluate_allocations(self.progress, candidate_allocations)
+    # add noise to utilities
+    utilities = [x * self.noise_multiplier for x in utilities]
     # set utility = 0 for all allocs > max_scale * 2 GPUs
     for i, alloc in enumerate(candidate_allocations):
       _, ngpus, _ = alloc

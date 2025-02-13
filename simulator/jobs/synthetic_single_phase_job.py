@@ -115,6 +115,8 @@ class SyntheticSinglePhaseJob(AbstractJob):
   
   def evaluate_allocations(self, candidate_allocations):
     utilities = self.jobclass.evaluate_allocations(candidate_allocations)
+    # add noise to utilities
+    utilities = [x * self.noise_multiplier for x in utilities]
     realloc_factor = self.run_time / (self.time + self.jobclass.restart_penalty)
     # disable realloc factor --> causing issues with solver for some reason
     realloc_factor = 1

@@ -27,6 +27,8 @@ class SinglePhaseJob(AbstractJob):
         util_fn = self.progess_fns[gpu_type]
         util = util_fn(num_nodes, num_gpus)
         candidate_utilities.append(util)
+    # add noise to utilities
+    candidate_utilities = [x * self.noise_multiplier for x in candidate_utilities]
     # normalize utilities so min non-zero utility is num_gpus
     nonzeroutil_ngpus_tuples = [(x, y[1]) for x, y in zip(candidate_utilities, candidate_allocations) if x > 0]
     if len(nonzeroutil_ngpus_tuples) > 0:
