@@ -40,6 +40,11 @@ class SiaLPRelaxedALCD(SiaILP):
     lpcfg.tol_trans = self.solver_options.get("alcd_tol_trans", 0.1)
     lpcfg.use_CG = not self.solver_options.get("disable_CG", False)
     lpcfg.inner_max_iter = self.solver_options.get("alcd_inner_max_iters", 1)
+    lpcfg.penalty_alpha = 20
+    lpcfg.primal_max_iter = 10
+    lpcfg.dual_max_iter = 50
+    lpcfg.primal_inner_max_iter = 50
+    lpcfg.dual_inner_max_iter = lpcfg.inner_max_iter
     self.lpcfg = lpcfg
     self.warm_start = solver_options.get('warm_start', False)
     self.warm_start_duals = solver_options.get('warm_start_duals', True)
@@ -237,6 +242,11 @@ class SiaLPRelaxedALCD(SiaILP):
     new_lpcfg.tol_trans = self.lpcfg.tol_trans
     new_lpcfg.use_CG = self.lpcfg.use_CG
     new_lpcfg.inner_max_iter = self.lpcfg.inner_max_iter
+    new_lpcfg.penalty_alpha = self.lpcfg.penalty_alpha
+    new_lpcfg.primal_max_iter = self.lpcfg.primal_max_iter
+    new_lpcfg.primal_inner_max_iter = self.lpcfg.primal_inner_max_iter
+    new_lpcfg.dual_max_iter = self.lpcfg.dual_max_iter
+    new_lpcfg.dual_inner_max_iter = self.lpcfg.inner_max_iter
 
     solve_start_time = time.time()
     rprint(f"[yellow]Solving ALCD problem with eta={new_lpcfg.eta}[/yellow]")
