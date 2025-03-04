@@ -46,6 +46,8 @@ def get_solver_params(solver_name, time_limit=None, rtol=None, mipgap=None, verb
     options = {'tol': rtol}
   elif solver_name == "ALCD":
     options = {'tol': rtol}
+  elif solver_name == "CPLEX":
+    options = {'tol': rtol, 'cplex_params': {'timelimit': time_limit, 'threads': num_threads, 'parameters.simplex.tolerances.feasibility': rtol}}
   else:
     raise ValueError(f"Solver {solver_name} not supported")
   return options
