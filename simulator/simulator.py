@@ -1,4 +1,5 @@
 from policies.sia_ilp import SiaILP
+from policies.sia_ilp_pop import SiaILPPOP
 from policies.sia_lp_relaxed import SiaLPRelaxed
 from policies.sia_lp_relaxed_alcd import SiaLPRelaxedALCD
 # from policies.sia_lp_relaxed_pjadmm import SiaLPRelaxedPJADMM
@@ -23,7 +24,8 @@ argparser.add_argument('--job-trace', type=str, default=None, help='Path to job 
 argparser.add_argument('--round-duration', type=int, default=60, help='Duration of each round in seconds')
 argparser.add_argument('--cluster-scale', type=int, default=1, help='Scale factor for cluster size')
 argparser.add_argument('--solver-timeout', type=int, default=1200, help='Timeout for solver (in seconds)')
-argparser.add_argument('--policy', type=str, default='sia-ilp', help='Policy to use for simulation: [sia-ilp, sia-lp-relaxed, sia-lp-relaxed-pjadmm, sia-lp-relaxed-alcd]')
+argparser.add_argument('--policy', type=str, default='sia-ilp', help='Policy to use for simulation: \
+                       [sia-ilp, sia-ilp-pop, sia-lp-relaxed, sia-lp-relaxed-pjadmm, sia-lp-relaxed-alcd]')
 argparser.add_argument('--solver-rtol', type=float, default=1e-4, help='Relative solution tolerance for solver')
 argparser.add_argument('--solver-name', type=str, default="GLPK_MI", help='Solver to use for policy optimization')
 argparser.add_argument('--verbose-solver', action='store_true', help='Whether to print verbose solver info')
@@ -35,6 +37,7 @@ argparser.add_argument('--disable-status', action='store_true', help='Whether to
 argparser.add_argument('--checkpoint-frequency', type=int, help='How frequently (in #rounds) to checkpoint the simulator state to the output-log file', default=10)
 argparser.add_argument('--load-checkpoint', action='store_true', help='Whether to load checkpoint from output-log file [default=False]')
 argparser.add_argument('--simulate-scheduler-delay', action='store_true', help='Whether to include scheduler latency in simulation: if True, the simulator will incorporate scheduler latency to next round duration [default: False]')
+argparser.add_argument('--pop-num-subproblems', type=int, default=8, help='Number of subproblems to use for POP solver [default=4]')
 argparser.add_argument('--pjadmm_viol_beta', type=float, default=0.1, help='Penalty parameter for the Proximal Jacobi ADMM solver')
 argparser.add_argument('--pjadmm_prox_mu', type=float, default=1e-2, help='Proximal parameter for the Proximal Jacobi ADMM solver')
 argparser.add_argument('--program-dump', type=str, default=None, help='Path to dump programs to [default=None for no dump]. Use this to dump the LP/MIP programs to a file for offline solving. Only supported for --policy=sia-lp-relaxed')
@@ -110,6 +113,10 @@ sia_solver_options = {'solver': solver_name, 'warm_start': warm_start_solver, 'v
 sia_solver_options.update(get_solver_params(solver_name=solver_name, time_limit=solver_timeout, rtol=solver_rtol, verbose=verbose_solver))
 if policy == 'sia-ilp':
   policy = SiaILP(cluster_nnodes, cluster_ngpus_per_node, sia_policy_options, sia_solver_options)
+elif policy == 'sia-ilp-pop':
+  num_subproblems = args.pop_num_subproblems
+  policy = SiaILPPOP(cluster_nnodes, cluster_ngpus_per_node, sia_policy_options, 
+                     sia_solver_options, num_subproblems)
 elif policy == 'sia-lp-relaxed':
   if args.program_dump is not None:
     sia_solver_options['record_programs'] = True
@@ -166,7 +173,11 @@ while event_recorder.current_time < simulator_timeout and not all_jobs_complete:
   configs = policy.get_configurations()
   utilities = {}
   for jobname, job in active_jobs.items():
-    utilities[jobname] = job.evaluate_allocations(configs)
+    if isinstance(policy, SiaILPPOP):
+      job_config = configs[jobname]
+      utilities[jobname] = job.evaluate_allocations(job_config)
+    else:
+      utilities[jobname] = job.evaluate_allocations(configs)
   policy.update_job_utilities(utilities)
 
   # optimize allocations
