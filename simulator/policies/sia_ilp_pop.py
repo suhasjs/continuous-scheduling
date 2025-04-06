@@ -5,50 +5,15 @@ from rich import print as rprint
 import time
 from copy import deepcopy
 from .sia_ilp import SiaILP
-from ray.util.multiprocessing import Pool
+import ray
 
 MAX_NUM_GPUS_IN_CONFIG = 2048
 NUM_CORES = 8
-
-# code copied from pop-ncflow-lptop/lib/runtime_utils.py
-from heapq import heappush, heappop
-
-VERBOSE = False
-
-
-def heapsched_rt(lrts, k):
-    h = []
-    for rt in lrts[:k]:
-        heappush(h, rt)
-
-    curr_rt = 0
-    for rt in lrts[k:]:
-        curr_rt = heappop(h)
-        heappush(h, rt + curr_rt)
-
-    while len(h) > 0:
-        curr_rt = heappop(h)
-
-    return curr_rt
-
-
-def parallelized_rt(lrts, k):
-    if len(lrts) == 0:
-        return 0.0
-    inorder_rt = heapsched_rt(lrts, k)
-    cp_bound = max(lrts)
-    area_bound = sum(lrts) / k
-    lrts.sort(reverse=True)
-    two_approx = heapsched_rt(lrts, k)
-
-    if VERBOSE:
-        print("-- in incoming order, schedule= ", inorder_rt)
-        print("-- bounds cp= ", cp_bound, "; area= ", area_bound)
-        print("-- sorted rts: ", lrts)
-        print("-- in sorted order, schedule ", two_approx)
-
-    return two_approx
-
+ 
+@ray.remote(num_cpus=1)
+class SiaILPRayActor(SiaILP):
+  def get_solver_stat(self):
+    return self.solver_stats[-1] if len(self.solver_stats) > 0 else None
 
 class SiaILPPOP(AbstractPolicy):
   def __init__(self, num_nodes, ngpus_per_node, policy_options, solver_options, num_subproblems=4):
@@ -67,7 +32,7 @@ class SiaILPPOP(AbstractPolicy):
     # create subproblems
     self.subproblems = []
     for i in range(num_subproblems):
-      subproblem = SiaILP(self.subproblem_num_nodes[i], self.subproblem_ngpus_per_node[i], 
+      subproblem = SiaILPRayActor.remote(self.subproblem_num_nodes[i], self.subproblem_ngpus_per_node[i], 
                           self.subproblem_policy_options[i], self.subproblem_solver_options[i])
       self.subproblems.append(subproblem)
 
@@ -90,10 +55,6 @@ class SiaILPPOP(AbstractPolicy):
 
     # stats
     self.solver_stats = []
-
-    # startup a multiprocessing pool
-    num_processes = min(NUM_CORES, num_subproblems)
-    self.pool = Pool(num_processes)
   
   def get_save_state(self):
     state = {
@@ -104,7 +65,7 @@ class SiaILPPOP(AbstractPolicy):
       "solver_stats": self.solver_stats,
       "cluster_ordering": self.cluster_ordering,
       "max_ngpus": self.max_ngpus,
-      "subproblems" : [subproblem.get_save_state() for subproblem in self.subproblems]
+      "subproblems" : ray.get([subproblem.get_save_state.remote() for subproblem in self.subproblems])
     }
     return state
   
@@ -120,15 +81,14 @@ class SiaILPPOP(AbstractPolicy):
       assert old_cluster_ngpus == new_cluster_ngpus, f"Cluster GPU count mismatch: {old_cluster_ngpus} != {new_cluster_ngpus}"
     for i, subproblem in enumerate(self.subproblems):
       subproblem_state = state["subproblems"][i]
-      subproblem.load_saved_state(subproblem_state, jobs)
+      ray.get(subproblem.load_saved_state.remote(subproblem_state, jobs))
   
   def get_configurations(self):
     configs_per_job = {}
+    subproblem_configs = ray.get([subproblem.get_configurations.remote() for subproblem in self.subproblems])
     for jobname, _ in self.active_jobs.items():
       subproblem_id = self.jobs_to_subproblems_map[jobname]
-      subproblem = self.subproblems[subproblem_id]
-      configs = subproblem.get_configurations()
-      configs_per_job[jobname] = configs
+      configs_per_job[jobname] = subproblem_configs[subproblem_id]
     return configs_per_job
   
   def update_failed_nodes(self, failed_nodes):
@@ -137,10 +97,11 @@ class SiaILPPOP(AbstractPolicy):
   def update_job_utilities(self, new_job_utilities):
     for jobname, utilities in new_job_utilities.items():
       subproblem_id = self.jobs_to_subproblems_map[jobname]
-      self.subproblems[subproblem_id].update_job_utilities({jobname: utilities})
+      self.subproblems[subproblem_id].update_job_utilities.remote({jobname: utilities})
 
   def add_new_jobs(self, new_jobs):
-    print(f"[green]Adding {len(new_jobs)} new jobs...[/green]")
+    rprint(f"[green]Adding {len(new_jobs)} new jobs...[/green]")
+    added_jobs_list = [list() for _ in range(len(self.subproblems))]
     # add job to subproblems with least number of jobs
     for jobname, job in new_jobs.items():
       # find subproblem with least number of jobs
@@ -152,8 +113,10 @@ class SiaILPPOP(AbstractPolicy):
       self.jobs_to_subproblems_map[jobname] = subproblem_id
       # add job to subproblem
       self.active_jobs[jobname] = job
-      print(f"\t{jobname} -> subproblem {subproblem_id}")
-      self.subproblems[subproblem_id].add_new_jobs({jobname: job})
+      added_jobs_list[subproblem_id].append(jobname)
+      self.subproblems[subproblem_id].add_new_jobs.remote({jobname: job})
+    for i, added_jobs in enumerate(added_jobs_list):
+      rprint(f"\tSubproblem #{i} -> {added_jobs}")
 
   def remove_completed_jobs(self, completed_jobs):
     for jobname in completed_jobs:
@@ -163,25 +126,21 @@ class SiaILPPOP(AbstractPolicy):
         self.active_jobs.pop(jobname)
         subproblem_id = self.jobs_to_subproblems_map[jobname]
         self.subproblem_to_jobs_map[subproblem_id].remove(jobname)
-        self.subproblems[subproblem_id].remove_completed_jobs([jobname])
+        self.subproblems[subproblem_id].remove_completed_jobs.remote([jobname])
         self.jobs_to_subproblems_map.pop(jobname)
 
   def step(self, seconds):
     self.current_time += seconds
     for i, subproblem in enumerate(self.subproblems):
-      subproblem.step(seconds)
+      subproblem.step.remote(seconds)
 
   def optimize_allocations(self):
     # start setup time 
     solve_start = time.time()
     self.allocations = {}
-    def optimize_subproblem(subproblem):
-      subproblem.optimize_allocations()
-      return subproblem
-    # parallelize subproblem optimization
-    self.subproblems = self.pool.map(optimize_subproblem, self.subproblems)
+    _ = ray.get([subproblem.optimize_allocations.remote() for subproblem in self.subproblems])
     for subproblem in self.subproblems:
-      self.allocations.update(subproblem.allocations)
+      self.allocations.update(ray.get(subproblem.get_allocations.remote()))
     
     # # solve each subproblem
     # # Single-threaded version
@@ -193,19 +152,20 @@ class SiaILPPOP(AbstractPolicy):
     #   self.allocations.update(subproblem.allocations)
     solve_end = time.time()
     total_solve_time = solve_end - solve_start
+    subproblem_solver_stats = ray.get([subproblem.get_solver_stat.remote() for subproblem in self.subproblems])
     stat = {"time": self.current_time, 
-            "num_jobs": sum([subproblem.solver_stats[-1]['num_jobs'] for subproblem in self.subproblems]),
-            "num_vars": sum([subproblem.solver_stats[-1]['num_vars'] for subproblem in self.subproblems]),
+            "num_jobs": sum([subproblem_solver_stat['num_jobs'] for subproblem_solver_stat in subproblem_solver_stats]),
+            "num_vars": sum([subproblem_solver_stat['num_vars'] for subproblem_solver_stat in subproblem_solver_stats]),
             "setup_time_ms": 0, 
             "solve_time_ms": total_solve_time * 1000, 
             "solver_status": "Optimal", 
-            "objective_val": sum([subproblem.solver_stats[-1]['objective_val'] for subproblem in self.subproblems]),
+            "objective_val": sum([subproblem_solver_stat['objective_val'] for subproblem_solver_stat in subproblem_solver_stats]),
             "num_subproblems": len(self.subproblems),
-            "subproblem_stats": [subproblem.solver_stats[-1] for subproblem in self.subproblems],
+            "subproblem_stats": subproblem_solver_stats,
             }
     # update solver stats
     self.solver_stats.append(stat)
-    if self.subproblem_solver_options[0]['verbose']:
-      rprint(f"[yellow]POP stats: {stat}[/yellow]")
+    rprint(f"[yellow]POP stats: {stat}[/yellow]")
+
   def get_allocations(self):
     return self.allocations
